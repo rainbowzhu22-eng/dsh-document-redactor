@@ -1,0 +1,56 @@
+{
+  "name": "dsh-document-redactor",
+  "version": "1.3.0",
+  "description": "Local document redaction and review powered by the frozen R99 engine",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "service.js",
+    "runtime.js",
+    "runtime.py",
+    "constraints.txt",
+    "client.js",
+    "rules-agent.js",
+    "rules_check.py",
+    "presentation.py",
+    "workbench.js",
+    "workbench.css",
+    "cordis.patch.yml",
+    "core",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "licenses"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "redaction",
+    "offline"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
+    }
+  }
+}

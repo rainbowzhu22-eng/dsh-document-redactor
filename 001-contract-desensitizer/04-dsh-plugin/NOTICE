@@ -1,0 +1,10 @@
+This adapter packages the frozen R99 offline document-redaction engine from
+whatcccup/cece_legal_skills and the reviewed collaborator return.
+The upstream MIT license and copyright lines are preserved in LICENSE.
+The source archive SHA-256 and per-file hashes are in core/BASELINE.json.
+DeepSeek Harness is the separate host; this package does not redistribute it.
+
+The dynamic community QR controller is adapted from dsh-dpia-workbench
+(https://github.com/The-Data-Galaxy/dsh-dpia-workbench), licensed under
+Apache License 2.0. The original license is preserved in licenses/Apache-2.0.txt.
+Changes: separate redaction manifest endpoint and redaction help/feedback UI.

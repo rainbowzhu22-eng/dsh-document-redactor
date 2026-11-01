@@ -1,0 +1,28 @@
+{
+  "upstream": "cece_legal_skills",
+  "product_version": "1.3.0-dev",
+  "build": "contract-desensitizer-v1.3.0-20261030-r99",
+  "archive_sha256": "de2e4276dc95b726f919597c598ccbc13bd90b0513da02a7a9e8ba94aafaa64a",
+  "files": {
+    "SKILL.md": "880100f70a0662280e18a609d3486c70c37a5e6b4fdf67b2a38f4954d7ea98bd",
+    "references/使用说明.md": "a114c759bce43aef55a70ea782791ca95e03703af5f92eaf0ab7721bd89f9bcf",
+    "references/第三方组件与许可声明.md": "cc98946e14db9836226e774efce09ddda80c7abb25cdaa9de8a13dc99776f1c8",
+    "references/脱敏规则清单.md": "d1c76ec438efefab119896b6c5bc6b604060175a0f3431984c8463cba0760cd3",
+    "scripts/contract_app_ui.py": "da695a531e253166d3ce4d2ac0070a9c17f8ca28d283f7f2e824c5128d152443",
+    "scripts/requirements.txt": "33389bdaf7bcd9b95978c4c80841faf7ac02b4e800689aa44c6276f139ccc5b3",
+    "scripts/contract_app_server.py": "6973f0f730082cd2d125e03cdf5f93220e896e031e0cf33a2715632c6cc00bb9",
+    "scripts/contract_pdf_ui.py": "4d11b550cec998fc9051950d027b39e8782436c6a8496382e63ff8fa932b6eb5",
+    "scripts/contract_review_ext.py": "71ed55e05308767359c3b476674a9737c703f681ea9331f636241e726367a7e6",
+    "scripts/contract_sensitive_detector.py": "f7b26f5fd72e948f5522d939ccc914e078a6a809afa8fdfac47691e4e617a2ab",
+    "scripts/contract_pdf_project.py": "f5b716ddbb7eb395947f33afd302b5ed896e91c955b21d2f6955cc3981827b26",
+    "scripts/contract_pdf_win_ocr.py": "feb508c0dceabb172c8b84441c8b1f8ffe5ed555b13493c427dd92c411af6c1c",
+    "scripts/contract_redactor.py": "df04d7e568734ec8fae53d9956716a146979c1621159bd18e797124faa7d5276",
+    "scripts/contract_redaction_policy.py": "505f7619ac819918055cf65d683604a6138bd3e5b1e860502fd9bfbb3580f57d",
+    "scripts/contract_docx_comments.py": "2f3c17fdeaa136bf1f803de5f57334eb4bc93dcf3c3f820eb82b8f3675f45f32",
+    "scripts/contract_docx_revisions.py": "b5fbd7a866829b4d37631ece68a3dc7e1a3a04c64dcc66d1ff5dae47d5e45e99",
+    "scripts/contract_ui_notices.py": "a2ea94207891cc8449b24eb75027b9a8899a38b062ba1f2f606cf47af3832e5d",
+    "scripts/pdf_vision_ocr": "85a495d25ba90f1a9c5cddd9e40d29ee3ef6e71b3389c2bc1ebb15c1146495aa",
+    "scripts/launcher/start.py": "bc20f86c3c8e3758eb9ab0d71e280ad62eda7f88e65f9300545d233cd78d9f48",
+    "scripts/launcher/README.md": "be24deca73ed71da7eea3133a394ecd921b24d0d4e2c79e43f9ac0e11743b209"
+  }
+}

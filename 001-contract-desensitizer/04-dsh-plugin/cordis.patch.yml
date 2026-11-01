@@ -1,0 +1,3 @@
+- insert:
+    - id: document-redactor
+      name: dsh-document-redactor

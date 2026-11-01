@@ -1,0 +1,46 @@
+/* Keep the frozen R99 visual language. The host shell and embedded pages use
+   the same font scale, blue/purple primary actions, surfaces and card geometry. */
+.dsh-workbench{font-family:var(--ff);font-size:14.5px;line-height:1.72;color:var(--ink);background:var(--bg)}
+.dsh-workbench .topbar{display:none}
+.dsh-workbench .topbar-in{max-width:1260px;min-height:34px;padding:4px 26px}
+.dsh-workbench .brand,.dsh-workbench .topbar-mid,.dsh-workbench .topbar-act .live,.dsh-workbench .topbar-act button{display:none}
+.dsh-workbench .topbar-act{margin-left:auto}.dsh-workbench .shell{max-width:1260px;padding:22px 26px 34px}
+.dsh-workbench .foot{display:none}.dsh-workbench .btn.sm{font-size:13.5px;padding:9px 13px}
+.dsh-upload .hero{padding:20px 26px;margin-bottom:16px;min-height:142px;border-radius:20px}
+.dsh-upload .hero h1{font-size:27px;line-height:1.3;letter-spacing:-.022em;margin:0 0 8px;font-weight:680}
+.dsh-upload .hero p{font-size:14.5px;line-height:1.72;max-width:720px}.dsh-upload .hero .eyebrow{font-size:12px;margin-bottom:9px;padding:3px 10px}
+.dsh-upload .hero-art{width:190px;height:112px}
+.dsh-upload .grid{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:20px;align-items:start}
+.dsh-upload .stack{display:grid;gap:16px}.dsh-upload .stack>.card{margin-bottom:0}
+.dsh-upload .card{padding:20px 22px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);box-shadow:var(--sh-1)}
+.dsh-upload .card h2{font-size:16px;font-weight:640;line-height:1.5;margin:0 0 12px}
+.dsh-upload .dsh-mode-card{padding:0;border:0;background:none;box-shadow:none}
+.dsh-upload .modes{display:flex;gap:4px;align-items:center}
+.dsh-upload .mode{padding:8px 16px;background:transparent;border:1px solid transparent;border-radius:var(--r-sm);box-shadow:none;cursor:pointer}
+.dsh-upload .mode .name{font-size:14.5px;font-weight:600;margin:0}.dsh-upload .mode .ic,.dsh-upload .mode .desc,.dsh-upload .mode.active:after{display:none}
+.dsh-upload .mode.active{background:var(--acc-soft);border-color:var(--acc-line);color:var(--acc)}
+.dsh-upload .mode:not(.active){color:var(--sub)}
+.dsh-upload .drop{padding:20px;border:2px dashed #c9d5f5;border-radius:var(--r);background:var(--surface-2)}
+.dsh-upload .drop:hover,.dsh-upload .drop:focus-visible{border-color:var(--acc);background:var(--acc-soft);outline:none}
+.dsh-upload .drop .ic{width:40px;height:40px;font-size:24px;margin-bottom:6px;border-radius:12px}
+.dsh-upload .drop .t{font-size:15px;font-weight:640}.dsh-upload .drop .h{font-size:12.5px;color:var(--sub)}
+.dsh-upload #uploadHelp{border:0;background:none;padding:0;margin-bottom:12px!important;color:var(--sub);font-size:12.5px;line-height:1.7}
+.dsh-upload #local-service-note{display:none}.dsh-upload #policy-wrap .field{font-size:14.5px;color:var(--ink-2)}
+.dsh-upload #policy-wrap select{max-width:460px;min-height:42px;background:#fff;border:1px solid var(--line);border-radius:var(--r-sm);font-family:inherit;font-size:14.5px;color:var(--ink-2)}
+.dsh-upload #policy-help,.dsh-upload .stat{font-size:12.5px;line-height:1.7;color:var(--sub)}
+.dsh-upload #filename{margin:8px 0}.dsh-upload .dsh-upload-card>.ab-row{margin-top:14px}
+.dsh-upload #submit-btn{min-width:156px;padding:13px 25px;border-radius:var(--r-sm);font-size:15px;font-weight:640}
+.dsh-advanced{border-top:1px solid var(--line-soft);padding-top:12px;margin-top:14px;font-size:12.5px;color:var(--sub)}
+.dsh-advanced summary{cursor:pointer;font-size:12.5px;line-height:1.7;color:var(--sub)}
+.dsh-advanced[open] summary{margin-bottom:12px}.dsh-advanced label{margin-top:10px}.dsh-more{margin-top:0}.dsh-more .card{margin-top:12px;box-shadow:none}
+.dsh-guidance .card{margin-bottom:16px}.dsh-guidance .olist{gap:14px}.dsh-guidance .olist li{font-size:13.5px;line-height:1.7;color:var(--ink-2)}
+.dsh-rule-row{display:flex;flex-direction:column;align-items:flex-start;gap:12px}.dsh-rule-row h2{margin-bottom:8px!important}
+.dsh-rule-row p{font-size:13.5px;color:var(--sub);line-height:1.72;margin:0}
+.dsh-rule-trigger{white-space:normal;color:var(--acc);border-color:var(--acc-line);background:var(--surface);font-size:13.5px;line-height:1.4;box-shadow:none}
+.dsh-rule-trigger:hover{background:var(--acc-soft);color:var(--acc);border-color:var(--acc-line)}
+.dsh-community .dsh-community-name{color:var(--ink-2);font-size:13.5px;font-weight:560;margin:0 0 4px}.dsh-community p{font-size:12.5px;line-height:1.7;color:var(--sub);margin:4px 0 10px}.dsh-community figure{margin:10px auto;width:180px}.dsh-community img{display:block;width:180px;height:180px;object-fit:contain;background:#fff;border-radius:8px}.dsh-community a{display:block;font-size:12.5px;color:var(--acc);text-decoration:none}.dsh-community a:hover{text-decoration:underline}.dsh-community button[hidden]{display:none}
+.dsh-review-help{display:flex;flex-direction:column;gap:9px;padding:12px;border:1px solid #c9d5ff;border-radius:11px;background:#f7f9fd;color:#39465a;font-size:13.5px;line-height:1.7;margin-bottom:14px}
+.dsh-review-help .dsh-rule-trigger{font-size:13.5px;padding:9px 12px;border-radius:9px;cursor:pointer}
+.dsh-rule-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border:1px solid #f0dcae;border-radius:11px;background:#fff8e8;color:#8a5a09;font-size:13.5px;line-height:1.7;margin-bottom:16px;grid-column:1/-1}
+@media(max-width:1000px){.dsh-upload .grid{grid-template-columns:minmax(0,1fr)}.dsh-guidance{display:grid;grid-template-columns:1fr 1fr;gap:16px}.dsh-guidance .card{margin:0}.dsh-upload .hero-art{width:150px}}
+@media(max-width:640px){.dsh-workbench .shell{padding:18px 16px 30px}.dsh-upload .hero{padding:20px}.dsh-upload .hero h1{font-size:24px}.dsh-upload .hero-art{display:none}.dsh-guidance{grid-template-columns:1fr}.dsh-upload .card{padding:18px}.dsh-rule-notice{flex-direction:column;align-items:flex-start}}
