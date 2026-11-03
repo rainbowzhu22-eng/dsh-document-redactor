@@ -8,7 +8,7 @@
 
 **Windows / macOS 均已实测 · 支持 Word、PDF、TXT、Markdown · 文书在本机处理**
 
-[**下载 v1.3.1**](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.3.1) · [工具官网](https://xingchendata.com/dsh-document-redactor.html) · [帮助与反馈](https://xingchendata.com/dsh-document-redactor.html#community)
+[**下载 v1.3.2**](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.3.2) · [工具官网](https://xingchendata.com/dsh-document-redactor.html) · [帮助与反馈](https://xingchendata.com/dsh-document-redactor.html#community)
 
 ![文书脱敏工作台界面](media/desktop-home-0.3.1.png)
 
@@ -26,11 +26,11 @@
 ## 开始使用
 
 1. 安装 [DeepSeek Harness](https://deepseek.com/harness/)，通过应用菜单“管理 dsh 命令…”注册 `dsh` 命令。
-2. [下载插件安装包](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.3.1)，选择 `dsh-document-redactor-1.3.1.tgz`。
+2. [下载插件安装包](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.3.2)，选择 `dsh-document-redactor-1.3.2.tgz`。
 3. 从菜单或托盘退出 DSH，在下载目录打开终端，执行：
 
 ```sh
-dsh plugin --profile desktop add "./dsh-document-redactor-1.3.1.tgz"
+dsh plugin --profile desktop add "./dsh-document-redactor-1.3.2.tgz"
 ```
 
 重新打开 DSH，点击侧栏 **“文书脱敏” → “打开脱敏工具”**，即可进入工作台。Windows 与 macOS 使用同一份 TGZ 安装包。

@@ -138,7 +138,7 @@ for(let a of p.candidates.filter(a=>a.page===cur)){{let state=reviewState(a),app
 ctx.setLineDash([]);for(let a of p.regions.filter(a=>a.page===cur)){{let b=a.bbox;ctx.fillStyle='rgba(0,0,0,.3)';ctx.fillRect(b[0]*sx,b[1]*sy,(b[2]-b[0])*sx,(b[3]-b[1])*sy);ctx.strokeStyle='#0a8b5f';ctx.strokeRect(b[0]*sx,b[1]*sy,(b[2]-b[0])*sx,(b[3]-b[1])*sy)}}
 if(drag){{ctx.strokeStyle='#d60';ctx.lineWidth=2;ctx.strokeRect(drag[0]*sx,drag[1]*sy,(drag[2]-drag[0])*sx,(drag[3]-drag[1])*sy)}}
 renderCandidates()}}
-async function change(action,fields){{try{{await api('/api/pdf/update/'+sid,{{action,revision:p.revision,...fields}});let j=await api('/api/pdf/status/'+sid);setProject(j.project);await show(cur);renderPolicy();updateSummary();}}catch(e){{err(e);let j=await api('/api/pdf/status/'+sid).catch(()=>null);if(j){{setProject(j.project);await show(cur);renderPolicy();updateSummary()}}}}}}
+async function change(action,fields){{try{{await api('/api/pdf/update/'+sid,{{action,revision:p.revision,...fields}});let j=await api('/api/pdf/status/'+sid);setProject(j.project);await show(cur);renderPolicy();updateSummary();}}catch(e){{let j=await api('/api/pdf/status/'+sid).catch(()=>null);if(j){{setProject(j.project);await show(cur);renderPolicy();updateSummary()}}err(e)}}}}
 function pos(e){{let c=$('source').querySelector('canvas'),r=c.getBoundingClientRect(),x=p.pages[cur-1];return [Math.max(0,Math.min(x.width,(e.clientX-r.left)*x.width/r.width)),Math.max(0,Math.min(x.height,(e.clientY-r.top)*x.height/r.height))]}}
 let canvas=$('source').querySelector('canvas'),start=null,base=null,activeUnlocatedId=null,activeCandidateRef=null,inspectedUnlocatedId=null;
 canvas.onpointerdown=e=>{{if(!p||p.stage==='processing')return;let q=pos(e);activeRegion=p.regions.find(a=>a.page===cur&&q[0]>=a.bbox[0]&&q[0]<=a.bbox[2]&&q[1]>=a.bbox[1]&&q[1]<=a.bbox[3]);if(activeRegion){{base=activeRegion.bbox.slice();start=q;drawMode=(Math.abs(q[0]-base[2])<10/zoom&&Math.abs(q[1]-base[3])<10/zoom)?'resize':'move';drag=base.slice()}}
@@ -147,7 +147,7 @@ drawMode='add';drag=[q[0],q[1],q[0],q[1]]}}canvas.setPointerCapture(e.pointerId)
 canvas.onpointermove=e=>{{if(!drag)return;let q=pos(e),pg=p.pages[cur-1];if(drawMode==='add'){{drag[2]=q[0];drag[3]=q[1]}}else if(drawMode==='resize'){{drag[2]=Math.max(base[0]+2,q[0]);drag[3]=Math.max(base[1]+2,q[1])}}else{{let dx=q[0]-start[0],dy=q[1]-start[1];dx=Math.max(-base[0],Math.min(pg.width-base[2],dx));dy=Math.max(-base[1],Math.min(pg.height-base[3],dy));drag=[base[0]+dx,base[1]+dy,base[2]+dx,base[3]+dy]}}draw()}};
 canvas.onpointerup=e=>{{if(!drag)return;let b=[Math.min(drag[0],drag[2]),Math.min(drag[1],drag[3]),Math.max(drag[0],drag[2]),Math.max(drag[1],drag[3])],mode=drawMode,id=activeRegion&&activeRegion.id,resolvesId=activeUnlocatedId&&null;drag=null;activeRegion=null;drawMode='';
 if(b[2]-b[0]<=2||b[3]-b[1]<=2){{draw();return}}
-let payload={{page:cur,bbox:b}};if(activeUnlocatedId)payload.resolves_id=activeUnlocatedId;else if(activeCandidateRef)payload.candidate_ref=activeCandidateRef;
+let payload={{page:cur,bbox:b}};if(id)payload.id=id;if(activeUnlocatedId)payload.resolves_id=activeUnlocatedId;else if(activeCandidateRef)payload.candidate_ref=activeCandidateRef;
 if(activeUnlocatedId||activeCandidateRef){{let el=$('locationStatus');if(el)el.textContent='';activeUnlocatedId=null;activeCandidateRef=null}}
 change(mode==='add'?'region-add':'region-update',payload)}};
 $('undo').onclick=()=>change('undo',{{page:cur}});

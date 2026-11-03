@@ -4,8 +4,8 @@
   "baseline_manifest_sha256": "3c2708d865bb2aaed69a799811f9c0bdd43d1eec7c4c655f4ae27af79b361e83",
   "return_zip_sha256": "aa40bebaa418db68be5cf459bdf5792ef97830de6bd1c847475516f7cb40d191",
   "return_tgz_sha256": "622863226ba204c08e28c20a31213ae36ee5499d408342009972df711138de65",
-  "local_candidate_version": "1.3.1",
-  "source_status": "Directed source tests and scoped macOS Web/native Desktop integration passed; Windows physical machine and full regression pending.",
+  "local_candidate_version": "1.3.2",
+  "source_status": "unpublished source; six targeted checks passed; installation pending",
   "preserved": [
     "original R99 provenance, rule template, license and engine selftest entrypoints",
     "confirmed DSH interface and amount/date policy selection"
@@ -14,7 +14,9 @@
     "PDF upload rules snapshot used by initial recognition, add-term and case sync",
     "live-rule mismatch or absent project snapshot blocks export before confirm handling",
     "only explicit keep/type actions satisfy candidate disposition; undo/reset restores pending",
-    "Mac OCR helper mode 0755 retained; native recognition executed successfully"
+    "Mac OCR helper mode 0755 retained; native recognition executed successfully",
+    "1.3.2: retain XML/revision/comment targets for manually added literals, preserving hash guards.",
+    "1.3.2: send region id for PDF box changes; retain update errors after refresh."
   ],
   "files": {
     "SKILL.md": "880100f70a0662280e18a609d3486c70c37a5e6b4fdf67b2a38f4954d7ea98bd",
@@ -27,11 +29,11 @@
     "scripts/contract_docx_revisions.py": "49141f615439c31671f4144a64529135fd60319745c1769a805e6a032bfa2b92",
     "scripts/contract_pdf_ocr_worker.py": "1c58157eeabba24d76abfe0ad3de3c9cded18c76a41efbdf67ab891018e12bef",
     "scripts/contract_pdf_project.py": "49fc0b7e28bf5676349104c7ed98bb440064c262f3c708fcbc06f5e0244091d4",
-    "scripts/contract_pdf_ui.py": "986831ff7ce495e499962ded32b1214f0079690d35d9df42e8c87b4b7360bd3f",
+    "scripts/contract_pdf_ui.py": "dc13486c140e37a17ba2abd0a0fada6e426667e3f7f1176876f1bed97ce22559",
     "scripts/contract_pdf_win_ocr.py": "3d5b4fcd19fbfed291d9b3db4e961f9b4f28289ced770e1d24d83637386d8f83",
     "scripts/contract_redaction_policy.py": "505f7619ac819918055cf65d683604a6138bd3e5b1e860502fd9bfbb3580f57d",
     "scripts/contract_redactor.py": "29e67d5f485347f5f3350b43767eee78a1dca9a5e0bbe0620d4324a5662818f8",
-    "scripts/contract_review_ext.py": "33da8e0701b7cbd45945c10c3b504ad5327faca2fb7e2808586117ec9aeba6a3",
+    "scripts/contract_review_ext.py": "26c933ca7dd4bbc179c7defdc8796e3ea6f2134ac5a211a3c186cead29c580e0",
     "scripts/contract_sensitive_detector.py": "8c3e14a5789c25effba23b1e2fe7a154a5c65d5f24a41d911db64feaf2d5e189",
     "scripts/contract_ui_notices.py": "a2ea94207891cc8449b24eb75027b9a8899a38b062ba1f2f606cf47af3832e5d",
     "scripts/launcher/README.md": "be24deca73ed71da7eea3133a394ecd921b24d0d4e2c79e43f9ac0e11743b209",

@@ -378,8 +378,9 @@ def add_exact_terms(doc, candidates, terms, type_meta=None):
                         start=s, end=e, context=full[max(0, s - 25):min(len(full), e + 25)],
                         text=full[s:e], block_index=bi, local_start=ls, local_end=le,
                         bbox=block.bbox_for_range(ls, le),
-                        target=(D._occurrence_target(block, bi, ls, le)
-                                if block.field_kind == "docx_readable_attribute" else None)))
+                        # Preserve the same XML coordinates and revision views as
+                        # automatic candidates, including comments and authors.
+                        target=D._occurrence_target(block, bi, ls, le)))
         if candidate.occurrences:
             manual[(tid, canonical)] = candidate
     kept = []

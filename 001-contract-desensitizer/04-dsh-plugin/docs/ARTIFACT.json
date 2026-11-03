@@ -1,32 +1,21 @@
 {
-  "version": "1.3.1",
-  "tag": "v1.3.1",
-  "sourceRepository": "https://github.com/rainbowzhu22-eng/cece_legal_skills",
+  "version": "1.3.2",
+  "tag": "v1.3.2",
+  "sourceRepository": "https://github.com/rainbowzhu22-eng/dsh-document-redactor",
   "pluginDirectory": "001-contract-desensitizer/04-dsh-plugin",
-  "artifact": "dsh-document-redactor-1.3.1.tgz",
-  "bytes": 423232,
-  "sha256": "b01727eeccc1b54cec8522a1e7a353970b3c1e6ac5cab791fee9f6fd4cc11385",
+  "artifact": "dsh-document-redactor-1.3.2.tgz",
+  "bytes": 423505,
+  "sha256": "7f1f898c3994ba5d0abdcd6402aa70e0a6fb75a106b34b23564269ff1d9ff5b0",
   "packageFiles": 40,
-  "packageReadme": "docs/PACKAGED-README-1.3.1.md",
-  "windowsAcceptance": "pending_real_machine",
-  "fullRegression": "not_run_for_merged_engine",
-  "runtimeReuse": {
-    "testedCandidateSha256": "ce0ea34face0a4107b6b3174f675a5ed47b127b3b7a94c485988ed93c35ce88c",
-    "changedFiles": [
-      "README.md",
-      "core/RETURN-MERGE.json"
-    ],
-    "runtimeChanged": false
-  },
   "packageFileHashes": {
     "LICENSE": "66b2ba6d6e762a3c40a9875d89a53fac29b153de33df510d89f9c131e5d4334c",
     "NOTICE": "82cb9a5a7097ebd3a8044ca83165166a813a19a0b364c26b5d3db4ce6c079741",
-    "README.md": "f8997ebeafcfeb640e2beb4197815b5579eac84b01bb51d1b2177957226165d4",
+    "README.md": "108ac1bbcb25f80198fb81d887f7f7fa178470ad8e24bbc17a26b53bd4bbb08e",
     "client.js": "e03060a54886211a5b374eb2cb32bfc61d01ca7f67b44ba86c07639f7c029d40",
     "constraints.txt": "36be4278f6445a37f73430509b105a521bcc505542a42e271b3dfd3c0e77ff9e",
     "cordis.patch.yml": "3df4efaef81b3d6af42aea4a5bbcffd512b6715784d49454c0210f75cf6f032d",
     "core/BASELINE.json": "3c2708d865bb2aaed69a799811f9c0bdd43d1eec7c4c655f4ae27af79b361e83",
-    "core/RETURN-MERGE.json": "84deec598b380842b44678f59821d960c6c3221124889c7482f1bf3f06f2426a",
+    "core/RETURN-MERGE.json": "4e71b89503e16e3a821303408cf3e532cba5281b9c8ee3e4144029467e025c8a",
     "core/SKILL.md": "880100f70a0662280e18a609d3486c70c37a5e6b4fdf67b2a38f4954d7ea98bd",
     "core/references/使用说明.md": "a114c759bce43aef55a70ea782791ca95e03703af5f92eaf0ab7721bd89f9bcf",
     "core/references/第三方组件与许可声明.md": "cc98946e14db9836226e774efce09ddda80c7abb25cdaa9de8a13dc99776f1c8",
@@ -37,11 +26,11 @@
     "core/scripts/contract_docx_revisions.py": "49141f615439c31671f4144a64529135fd60319745c1769a805e6a032bfa2b92",
     "core/scripts/contract_pdf_ocr_worker.py": "1c58157eeabba24d76abfe0ad3de3c9cded18c76a41efbdf67ab891018e12bef",
     "core/scripts/contract_pdf_project.py": "49fc0b7e28bf5676349104c7ed98bb440064c262f3c708fcbc06f5e0244091d4",
-    "core/scripts/contract_pdf_ui.py": "986831ff7ce495e499962ded32b1214f0079690d35d9df42e8c87b4b7360bd3f",
+    "core/scripts/contract_pdf_ui.py": "dc13486c140e37a17ba2abd0a0fada6e426667e3f7f1176876f1bed97ce22559",
     "core/scripts/contract_pdf_win_ocr.py": "3d5b4fcd19fbfed291d9b3db4e961f9b4f28289ced770e1d24d83637386d8f83",
     "core/scripts/contract_redaction_policy.py": "505f7619ac819918055cf65d683604a6138bd3e5b1e860502fd9bfbb3580f57d",
     "core/scripts/contract_redactor.py": "29e67d5f485347f5f3350b43767eee78a1dca9a5e0bbe0620d4324a5662818f8",
-    "core/scripts/contract_review_ext.py": "33da8e0701b7cbd45945c10c3b504ad5327faca2fb7e2808586117ec9aeba6a3",
+    "core/scripts/contract_review_ext.py": "26c933ca7dd4bbc179c7defdc8796e3ea6f2134ac5a211a3c186cead29c580e0",
     "core/scripts/contract_sensitive_detector.py": "8c3e14a5789c25effba23b1e2fe7a154a5c65d5f24a41d911db64feaf2d5e189",
     "core/scripts/contract_ui_notices.py": "a2ea94207891cc8449b24eb75027b9a8899a38b062ba1f2f606cf47af3832e5d",
     "core/scripts/launcher/README.md": "be24deca73ed71da7eea3133a394ecd921b24d0d4e2c79e43f9ac0e11743b209",
@@ -50,7 +39,7 @@
     "core/scripts/requirements.txt": "33389bdaf7bcd9b95978c4c80841faf7ac02b4e800689aa44c6276f139ccc5b3",
     "index.js": "268b138c9cbce5e59e75ddb4e87b4b98f7ac1f592203886b6d019d3a9eb06883",
     "licenses/Apache-2.0.txt": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
-    "package.json": "ae1493a548358d9fbf82523c8a5b2538e93b7cd82d0776f286a78fc0c744a3a3",
+    "package.json": "f57f4346d4142f2734fbf6ddd0984dffe0481192ba94444647634c425339be51",
     "presentation.py": "c51123a4c7c772f6b73026841c479d571c62fe97d4c637ce936b9cb04ff9bd18",
     "rules-agent.js": "d5e23f2b5ceaf702dbbe1c4f2c5393a7abb4db54b695a1acb271c7f6322b6f69",
     "rules_check.py": "239779b5ceaabc1b8e3cfc40b6e9c2ba926a823b617651648a88c99fd70fafe5",
@@ -59,5 +48,17 @@
     "service.js": "a54db57bce1b9b21d2fd12ae8a4d0b425981e2c8213a60b3bbc2013511ec0e5e",
     "workbench.css": "ffe637ee430f7a218bae23ecd978874541493f57a6a390d95817c6b7b4f4fcf8",
     "workbench.js": "20057b8836b5b6767c61c202b7c557a328af4e32b899959ba58f691304c89923"
-  }
+  },
+  "testedArtifactReusedWithoutRebuild": true,
+  "sourceReadme": "README.md",
+  "packageReadmeIsBuildTimeSnapshot": true,
+  "validationReuse": {
+    "sourceDirectedChecks": 6,
+    "wordAndPdfRepairInstallations": [
+      "DSH Web",
+      "native DSH Desktop"
+    ],
+    "runtimeUnchangedSinceTestedArtifact": true
+  },
+  "windowsSupport": "tested; user confirmed 2026-11-03"
 }
