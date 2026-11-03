@@ -1,0 +1,39 @@
+{
+  "candidates": [
+    {
+      "id": "89907196b8eb310a0db4",
+      "page": 1,
+      "type": "NUMBER_CANDIDATE",
+      "label": "编号候选，类别待核对",
+      "value": "DOC-314159",
+      "placeholder": "[编号候选，类别待核对#1]",
+      "bbox": [
+        100.02,
+        108.10499999999999,
+        188.38500000000002,
+        123.10499999999999
+      ],
+      "bboxes": [
+        [
+          100.02,
+          108.10499999999999,
+          188.38500000000002,
+          123.10499999999999
+        ]
+      ],
+      "replaceable": true,
+      "selected": false,
+      "machine_selected": false,
+      "policy_excluded": false,
+      "source": "text",
+      "confidence": 0.5,
+      "entity_confidence": 0.5,
+      "ocr_confidence": null,
+      "score_semantics": "split-v1",
+      "requires_manual_box": false,
+      "selection_reason": "number-candidate",
+      "geometry": "character",
+      "review_reasons": []
+    }
+  ]
+}

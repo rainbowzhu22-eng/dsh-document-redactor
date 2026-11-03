@@ -71,9 +71,12 @@ test('规则RPC只接受限定动作，不接受路径、原文或任意执行�
   rules.propose=async()=>{throw new Error('/private/secret');};
   const failed=await(await route.fetch(req({action:'rules-propose',request:'test'}))).text();assert.ok(!failed.includes('/private'));assert.equal(requests,1);
 });
-test('原R99引擎逐文件摘要保留，客户端只通过宿主layout API注册页面',async()=>{
+test('原R99来源保留并核对合并源码摘要，客户端只通过宿主layout API注册页面',async()=>{
   const baseline=JSON.parse(await readFile(join(root,'core/BASELINE.json'),'utf8'));
-  for(const [rel,hash] of Object.entries(baseline.files))assert.equal(createHash('sha256').update(await readFile(join(root,'core',rel))).digest('hex'),hash,rel);
+  const merged=JSON.parse(await readFile(join(root,'core/RETURN-MERGE.json'),'utf8'));
+  assert.equal(baseline.archive_sha256,merged.original_archive_sha256);
+  assert.equal(createHash('sha256').update(await readFile(join(root,'core/BASELINE.json'))).digest('hex'),merged.baseline_manifest_sha256);
+  for(const [rel,hash] of Object.entries(merged.files))assert.equal(createHash('sha256').update(await readFile(join(root,'core',rel))).digest('hex'),hash,rel);
   let client;vm.runInNewContext(await readFile(join(root,'client.js'),'utf8'),{window:{__ModuleLoader__:{load(x){client=x.factory(()=>({createElement(){}}));}}}});
   const entries=[];client.apply({layout:{toggleSidebar(){},selectPanel(){}},connection:{rpc:{}},slots:{inject(_s,f){f();},register(x){entries.push(x);}}});
   assert.deepEqual(entries.map(x=>x.name),['main','sidebar.panellist']);assert.ok(client.inject.includes('layout'));

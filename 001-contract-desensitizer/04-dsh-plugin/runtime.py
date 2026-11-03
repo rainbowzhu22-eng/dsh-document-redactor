@@ -1,4 +1,4 @@
-"""DSH adapter: private environment and the unchanged R99 local service."""
+"""DSH adapter: private environment and the local document service."""
 import argparse
 import json
 import os
@@ -41,6 +41,7 @@ def main():
     presentation.install(server)
     server.D.enforce_offline = lambda: None  # Same loopback startup behavior as R99 main().
     httpd = server.start_app_server("127.0.0.1", 0, str(root / "sessions"))
+    server._prewarm_pdf_ocr()
     # The private stdin pipe is held only by our owner. EOF also covers an owner
     # crash or direct termination, where plugin disposal cannot run.
     def stop_when_owner_exits():

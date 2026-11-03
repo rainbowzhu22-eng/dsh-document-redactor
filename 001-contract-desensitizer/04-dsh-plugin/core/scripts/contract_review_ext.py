@@ -12,6 +12,59 @@ from lxml import etree as ET
 
 import contract_sensitive_detector as D
 
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_W14_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
+_WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+_STRUCTURAL_ATTRIBUTES = {
+    (_W14_NS, "paraId"), (_W14_NS, "textId"),
+    (_WP_NS, "id"), (_REL_NS, "Id"),
+}
+_STRUCTURAL_WORD_ATTRIBUTES = {"rsidR", "rsidP", "rsidRPr", "rsidDel",
+                               "rsidSect", "rsidTr", "rsidCell"}
+_SUPPORTED_READABLE_ATTRIBUTES = {
+    (_WP_NS, "docPr", "descr"), (_WP_NS, "docPr", "title"),
+}
+
+
+def _attribute_name_parts(name):
+    if name.startswith("{") and "}" in name:
+        namespace, local = name[1:].split("}", 1)
+        return namespace, local
+    return "", name
+
+
+def _is_structural_attribute(name):
+    namespace, local = _attribute_name_parts(name)
+    return ((namespace, local) in _STRUCTURAL_ATTRIBUTES or
+            (namespace == _W_NS and local in _STRUCTURAL_WORD_ATTRIBUTES))
+
+
+def _check_xml_attribute_residuals(root, part, pattern,
+                                  allow_unsafe_fields=False,
+                                  ignored_roots=()):
+    if not pattern:
+        return
+    for element in root.iter():
+        if not isinstance(element.tag, str):
+            continue
+        if ignored_roots and _inside_nodes(element, ignored_roots):
+            continue
+        for name, value in element.attrib.items():
+            if (allow_unsafe_fields and element.tag == "{" + _W_NS + "}fldSimple" and
+                    name == "{" + _W_NS + "}instr"):
+                continue
+            if _is_structural_attribute(name) or not pattern.search(value):
+                continue
+            namespace, local = _attribute_name_parts(name)
+            if (namespace, element.tag.rsplit("}", 1)[-1], local) in _SUPPORTED_READABLE_ATTRIBUTES:
+                kind = "受支持的可读属性"
+            else:
+                kind = "未知属性"
+            element_name = element.tag.rsplit("}", 1)[-1]
+            raise ValueError("已选原文仍存在于%s：%s %s@%s" %
+                             (kind, part, element_name, local))
+
 
 def validate_term(raw):
     if not isinstance(raw, dict):
@@ -324,7 +377,9 @@ def add_exact_terms(doc, candidates, terms, type_meta=None):
                         page=block.page, location=block.location, block_type=block.block_type,
                         start=s, end=e, context=full[max(0, s - 25):min(len(full), e + 25)],
                         text=full[s:e], block_index=bi, local_start=ls, local_end=le,
-                        bbox=block.bbox_for_range(ls, le)))
+                        bbox=block.bbox_for_range(ls, le),
+                        target=(D._occurrence_target(block, bi, ls, le)
+                                if block.field_kind == "docx_readable_attribute" else None)))
         if candidate.occurrences:
             manual[(tid, canonical)] = candidate
     kept = []
@@ -1317,12 +1372,14 @@ def clean_docx(path, originals, comment_mode, preserve_revisions=False,
                         if _is_residual_visible_text_node(element) and element.text:
                             if residual_pattern and residual_pattern.search(element.text):
                                 raise ValueError("已选原文仍存在于非正文 XML 中")
-                        if (attribute_pattern and not (
-                                allow_unsafe_fields and
-                                element.tag == _W + "fldSimple") and
-                                any(attribute_pattern.search(attr)
-                                    for attr in element.attrib.values())):
-                            raise ValueError("已选原文仍存在于 XML 属性中")
+                    _check_xml_attribute_residuals(
+                        root, name, attribute_pattern,
+                        allow_unsafe_fields=allow_unsafe_fields,
+                        ignored_roots=(
+                            unknown_revision_roots_by_part.get(name, set()) |
+                            (unsupported_roots if (preserve_revisions or
+                             allow_unsupported_objects or
+                             allow_unverified_passthrough) else set())))
                 data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
             payload[name] = data
         rel_names = ({"_rels/.rels", "word/_rels/document.xml.rels"} |
@@ -1382,12 +1439,21 @@ def clean_docx(path, originals, comment_mode, preserve_revisions=False,
                         changed = True
                 if changed:
                     data = ET.tostring(rel_root, encoding="utf-8", xml_declaration=True)
-            decoded = data.decode("utf-8", "ignore")
             if (name not in unscanned_passthrough_parts and
                     name not in note_parts and name not in unknown_revision_parts and
-                    attribute_pattern and
-                    attribute_pattern.search(decoded)):
-                raise ValueError("导出件仍含已选原文：%s" % name)
+                    name.lower().endswith((".xml", ".rels"))):
+                try:
+                    root = ET.fromstring(data)
+                except Exception as exc:
+                    raise ValueError("导出件XML部件无法安全检查：%s" % name) from exc
+                if residual_pattern:
+                    for element in root.iter():
+                        if not isinstance(element.tag, str):
+                            continue
+                        if ((element.text and residual_pattern.search(element.text)) or
+                                (element.tail and residual_pattern.search(element.tail))):
+                            raise ValueError("导出件仍含已选原文：%s" % name)
+                _check_xml_attribute_residuals(root, name, attribute_pattern)
         fd, tmp = tempfile.mkstemp(suffix=".docx", dir=os.path.dirname(path))
         os.close(fd)
         try:

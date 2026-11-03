@@ -1,6 +1,6 @@
-> **本 fork 新增：文书脱敏 DSH 插件 1.3.0（预发布）**
+> **本 fork 新增：文书脱敏 DSH 插件 1.3.1（预发布）**
 >
-> [插件源码与使用说明](001-contract-desensitizer/04-dsh-plugin/README.md) · [DSH 安装包与 Windows 测试包](https://github.com/rainbowzhu22-eng/cece_legal_skills/releases/tag/v1.3.0) · [工具官网](https://xingchendata.com/dsh-document-redactor.html)
+> [插件源码与使用说明](001-contract-desensitizer/04-dsh-plugin/README.md) · [DSH 插件安装包](https://github.com/rainbowzhu22-eng/cece_legal_skills/releases/tag/v1.3.1) · [工具官网](https://xingchendata.com/dsh-document-redactor.html)
 >
 > 这是安装在 **DeepSeek Harness 中的插件**，在插件内上传、复核、PDF 框选、导出、历史恢复，并可调用 Agent 改规则。**Windows 待实机验收**。文书在本机处理；首次依赖、群码与云端规则助手会联网，后者提交当前规则全文和手填需求，不自动附带文书或映射。
 >
@@ -8,9 +8,9 @@
 >
 > 桌面版先通过官方 DSH 的“管理 dsh 命令…”注册其 CLI，并从菜单/托盘正常退出宿主，再执行：
 >
-> `dsh plugin --profile desktop add "github:rainbowzhu22-eng/cece_legal_skills#v1.3.0"`
+> `dsh plugin --profile desktop add "github:rainbowzhu22-eng/cece_legal_skills#v1.3.1"`
 >
-> 本次优先使用 Release 的 TGZ。1.3.0 仅版本与说明更新，运行时代码复用已验的 0.3.1-dev；GitHub 根清单转入子目录的结构经静态核对，尚未单独实装。Web profile 可将 `desktop` 改为 `web`。
+> 优先使用Release的TGZ。1.3.1接入Windows OCR/Word修复，补回PDF规则快照与导出门禁，并修正插件内映射确认；运行时与Mac双端定向实装候选一致。Windows实机与合并版全量回归尚未覆盖。Git标签安装路径尚未单独实装；Web profile将desktop改为web。
 
 ---
 

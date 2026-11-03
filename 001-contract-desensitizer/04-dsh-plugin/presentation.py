@@ -1,4 +1,4 @@
-"""DSH presentation adapter. Keep the frozen R99 engine and export gates intact."""
+"""DSH presentation adapter. Preserve the confirmed UI and export gates."""
 from pathlib import Path
 import re
 
@@ -19,7 +19,7 @@ DATA_AND_AI = """<h2>数据处理与 AI 使用</h2>
 
 
 def reword_boundaries(body):
-    """Correct plugin disclosures while leaving the frozen R99 vendor untouched."""
+    """Correct plugin disclosures while leaving processing in the embedded engine."""
     if '<form id="upload-form">' in body:
         body = re.sub(r'<h2>🛡 安全边界</h2>\s*<ul class="tlist">.*?</ul>',
                       lambda _match: DATA_AND_AI, body, count=1, flags=re.S)

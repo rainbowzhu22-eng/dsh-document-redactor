@@ -31,6 +31,12 @@ OCR_REVIEW_THRESHOLD = 0.70
 OCR_BOX_THRESHOLD = 0.70
 OCR_LINE_ACCEPT_THRESHOLD = 0.35
 ENTITY_DISPLAY_MIN_CONFIDENCE = 0.30
+DEFAULT_TYPE_DEFAULTS = {"AMOUNT": True, "DATE": True,
+                         "NUMBER_CANDIDATE": False}
+
+
+def _default_type_enabled(type_id):
+    return DEFAULT_TYPE_DEFAULTS.get(type_id, True)
 
 
 def _lock(sid):
@@ -128,8 +134,7 @@ def _count_link_annotations(path):
 
 
 def create(root, sid, source, filename, profile="contract", case_name="", terms=None,
-           policy_id=Policy.PRESERVE_TRANSACTION, policy_selection=None,
-           rules_snapshot=None):
+           policy_id=Policy.PRIVACY_FIRST, policy_selection=None, rules_snapshot=None):
     base, _ = paths(root, sid)
     base.mkdir(parents=True, exist_ok=True, mode=0o700)
     private = base / "private"
@@ -162,6 +167,9 @@ def create(root, sid, source, filename, profile="contract", case_name="", terms=
     project = {"kind": "pdf-v1.3", "sid": sid, "filename": filename,
                "sha256": sha, "profile": profile, "case_name": case_name,
                "policy_id": policy_id, "policy_selection": policy_selection or policy_id,
+               "type_defaults": dict(DEFAULT_TYPE_DEFAULTS, **{t: False for t in Policy.excluded_types(policy_id)}),
+               "type_choices": {t: False for t in Policy.excluded_types(policy_id)
+                                if policy_selection == Policy.PRESERVE_TRANSACTION},
                "link_annotation_count": link_annotation_count,
                "stage": "processing", "done": 0, "cancel": False, "revision": 0,
                "pages": pages, "candidates": [], "regions": [], "terms": terms or [],
@@ -494,10 +502,95 @@ def _page_render_items(project, page_no):
     """同一项目快照下，预览与导出共用的逐页实际应用项。"""
     pages = {x.get("page"): x for x in project.get("pages", [])}
     candidates = [x for x in project.get("candidates", [])
-                  if x.get("page") == page_no and x.get("selected") and
+                  if x.get("page") == page_no and
+                  _effective_candidate_state(project, x)["selected"] and
                   _candidate_render_plan(x, pages.get(page_no))["mode"] != "none"]
     regions = [x for x in project.get("regions", []) if x.get("page") == page_no]
     return candidates, regions
+
+
+def _effective_candidate_state(project, item):
+    """Return the authoritative disposition for new and legacy PDF projects."""
+    if "type_defaults" not in project:
+        if (item.get("resolution") == "keep" or
+                (item.get("status") == "keep" and not item.get("policy_excluded"))):
+            return {"selected": False, "state": "keep", "source": "user"}
+        policy_id = project.get("policy_id", Policy.PRESERVE_TRANSACTION)
+        excluded = item.get("policy_excluded", item.get("type") in
+                            Policy.excluded_types(policy_id))
+        if excluded:
+            return {"selected": False, "state": "policy-excluded", "source": "policy"}
+        return {"selected": bool(item.get("selected")),
+                "state": "redact" if item.get("selected") else "optional",
+                "source": "legacy"}
+
+    choice = item.get("user_choice")
+    if choice == "keep":
+        return {"selected": False, "state": "keep", "source": "user"}
+    if choice == "redact":
+        return {"selected": True, "state": "redact", "source": "user"}
+    if item.get("status") == "keep":
+        return {"selected": False, "state": "keep", "source": "user"}
+    if item.get("resolution") == "manual-covered" or item.get("status") == "manual-covered":
+        return {"selected": False, "state": "manual-covered", "source": "manual"}
+    defaults = project.get("type_defaults") or {}
+    if not defaults.get(item.get("type"), _default_type_enabled(item.get("type"))):
+        # A shipped default (or an old return's saved default) is not a user decision.
+        if (project.get("type_choices") or {}).get(item.get("type")) is False:
+            return {"selected": False, "state": "type-default-keep", "source": "user-type"}
+        return {"selected": False, "state": "optional", "source": "unconfirmed-type-default"}
+    selected = bool(item.get("machine_selected"))
+    return {"selected": selected,
+            "state": "redact" if selected else "optional",
+            "source": "machine"}
+
+
+def _migrate_legacy_type_state(project):
+    """Upgrade only when a user edits an old project; never on read alone."""
+    if "type_defaults" in project:
+        return
+    excluded = Policy.excluded_types(project.get("policy_id", Policy.PRESERVE_TRANSACTION))
+    type_ids = {item.get("type") for key in ("candidates", "unlocated_candidates")
+                for item in project.get(key, []) if item.get("type")}
+    type_ids.update(DEFAULT_TYPE_DEFAULTS)
+    project["type_defaults"] = {
+        type_id: type_id not in excluded and _default_type_enabled(type_id)
+        for type_id in type_ids
+    }
+    pages = {page.get("page"): page for page in project.get("pages", [])}
+    policy_excluded_types = Policy.excluded_types(
+        project.get("policy_id", Policy.PRESERVE_TRANSACTION))
+    for item in project.get("candidates", []):
+        resolution = item.get("resolution")
+        legacy_policy_keep = (
+            resolution == "policy-excluded" or
+            (item.get("status") == "keep" and resolution != "keep" and
+             (item.get("policy_excluded") or
+              item.get("type") in policy_excluded_types)))
+        if legacy_policy_keep:
+            item["status"] = "pending"
+            if resolution == "policy-excluded":
+                item.pop("resolution", None)
+            resolution = item.get("resolution")
+        if resolution in ("keep", "redact"):
+            item["user_choice"] = resolution
+            item["machine_selected"] = resolution == "redact"
+            continue
+        plan = _candidate_render_plan(item, pages.get(item.get("page")))
+        confidence = _entity_confidence(item)
+        item["machine_selected"] = bool(
+            item.get("selected") or
+            (item.get("type") != "NUMBER_CANDIDATE" and
+             confidence is not None and confidence >= ENTITY_AUTO_SELECT_THRESHOLD and
+             plan["mode"] != "none"))
+    for item in project.get("unlocated_candidates", []):
+        if item.get("status") == "keep":
+            if (item.get("policy_excluded") or
+                    item.get("type") in policy_excluded_types):
+                item["status"] = "pending"
+            else:
+                item["user_choice"] = "keep"
+        item.pop("resolution", None)
 
 
 def _auto_disposition(project):
@@ -510,8 +603,17 @@ def _auto_disposition(project):
     for item in project.get("candidates", []):
         if item.get("id") in applied:
             continue
-        if (item.get("selected") or item.get("resolution") in ("keep", "manual-covered") or
-                item.get("policy_excluded") or item.get("type") == "NUMBER_CANDIDATE"):
+        if "type_defaults" in project:
+            if (not (project.get("type_defaults") or {}).get(
+                    item.get("type"), _default_type_enabled(item.get("type"))) or
+                    item.get("user_choice") in ("keep", "redact")):
+                continue
+            already_selected = bool(item.get("machine_selected"))
+        else:
+            already_selected = bool(item.get("selected"))
+        if (already_selected or item.get("resolution") in ("keep", "manual-covered") or
+                ("type_defaults" not in project and item.get("policy_excluded")) or
+                item.get("type") == "NUMBER_CANDIDATE"):
             continue
         entity = _entity_confidence(item)
         if entity is None or entity < ENTITY_AUTO_SELECT_THRESHOLD:
@@ -525,10 +627,16 @@ def _auto_disposition(project):
                         "unlocated_candidates": json.loads(json.dumps(
                             project.get("unlocated_candidates", []))),
                         "reviewed": [x["reviewed"] for x in project["pages"]],
-                        "coverage_links": json.loads(json.dumps(project.get("coverage_links", [])))}
+                        "coverage_links": json.loads(json.dumps(project.get("coverage_links", []))),
+                        "type_defaults": json.loads(json.dumps(project.get("type_defaults"))),
+                        "type_choices": json.loads(json.dumps(project.get("type_choices", {}))),
+                        "has_type_defaults": "type_defaults" in project}
         reason = ("ocr_low" if _candidate_requires_manual_box(item)
                   else "multiline" if len(plan["boxes"]) > 1 else "coarse_geometry")
-        item["selected"] = True
+        if "type_defaults" in project:
+            item["machine_selected"] = True
+        else:
+            item["selected"] = True
         item["auto_applied"] = reason
         applied.add(item["id"])
     if snapshot is not None:
@@ -712,8 +820,7 @@ def _unlocated_candidate(doc, item, occurrence, identity, index, reason, numbere
 
 
 def _suggestions(doc, profile, terms, stored_numbers=None, pages=None,
-                 policy_id=Policy.PRESERVE_TRANSACTION, include_stats=False,
-                 rules_snapshot=None):
+                 policy_id=Policy.PRIVACY_FIRST, include_stats=False, rules_snapshot=None):
     settings = _settings(profile == "litigation", rules_snapshot)
     engine = D.DetectorEngine(settings)
     candidates = engine.scan_document(doc)
@@ -783,6 +890,7 @@ def _suggestions(doc, profile, terms, stored_numbers=None, pages=None,
                         "placeholder": numberer.placeholder(item["type"], item["value"], item["label"]),
                         "bbox": bbox, "bboxes": bboxes, "replaceable": replaceable,
                         "selected": auto_selected,
+                        "machine_selected": auto_selected,
                         "policy_excluded": excluded,
                         "source": "ocr" if is_ocr else "text",
                         "confidence": entity_confidence,
@@ -849,7 +957,13 @@ def _blocks_file(root, sid, page_no):
     return folder / f"{page_no:04d}.json"
 
 
-def process(root, sid):
+def _job_active(is_current, cancel):
+    if cancel is not None and cancel.is_set():
+        return False
+    return True if is_current is None else bool(is_current())
+
+
+def process(root, sid, generation=None, is_current=None, cancel=None):
     """Background page rendering/OCR; checkpoints survive restart/cancel/failure."""
     with _lock(sid):
         project = load(root, sid)
@@ -857,7 +971,15 @@ def process(root, sid):
         project["stage"] = "processing"
         project["error"] = ""
         save(root, sid, project)
+    pdf = None
     try:
+        if not _job_active(is_current, cancel):
+            with _lock(sid):
+                if is_current is None or is_current():
+                    project = load(root, sid)
+                    project["stage"] = "cancelled"
+                    save(root, sid, project)
+            return
         source = original(root, sid)
         import pypdfium2 as pdfium
         pdf = pdfium.PdfDocument(str(source))
@@ -873,7 +995,7 @@ def process(root, sid):
         for i in range(len(pdf)):
             with _lock(sid):
                 project = load(root, sid)
-                if project["cancel"]:
+                if project["cancel"] or not _job_active(is_current, cancel):
                     project["stage"] = "cancelled"
                     save(root, sid, project)
                     return
@@ -949,14 +1071,27 @@ def process(root, sid):
             page_state["manual_confirm"] = False
             page_state["stage"] = "ready"
             with _lock(sid):
+                if not _job_active(is_current, cancel):
+                    if is_current is None or is_current():
+                        latest = load(root, sid)
+                        latest["stage"] = "cancelled"
+                        save(root, sid, latest)
+                    return
                 latest = load(root, sid)
                 latest["pages"][i] = page_state
                 latest["done"] = sum(x["stage"] == "ready" for x in latest["pages"])
                 save(root, sid, latest)
         pdf.close()
+        pdf = None
         doc = D.Document(source=str(source), file_type="pdf", blocks=blocks,
                          sha256=project["sha256"])
         with _lock(sid):
+            if not _job_active(is_current, cancel):
+                if is_current is None or is_current():
+                    project = load(root, sid)
+                    project["stage"] = "cancelled"
+                    save(root, sid, project)
+                return
             project = load(root, sid)
             candidates, numbers, unlocated, scan_stats = _suggestions(
                 doc, project["profile"], project["terms"], project.get("numbers"),
@@ -970,11 +1105,21 @@ def process(root, sid):
             project["stage"] = "review"
             save(root, sid, project)
     except Exception as exc:
+        if not _job_active(is_current, cancel):
+            with _lock(sid):
+                if is_current is None or is_current():
+                    project = load(root, sid)
+                    project["stage"] = "cancelled"
+                    save(root, sid, project)
+            return
         with _lock(sid):
             project = load(root, sid)
             project["stage"] = "failed"
             project["error"] = str(exc)[:300]
             save(root, sid, project)
+    finally:
+        if pdf is not None:
+            pdf.close()
 
 
 def public(project):
@@ -1013,7 +1158,14 @@ def _preserve_review_decisions(candidates, unlocated, prior):
             matches = positions.get(position_key(item), [])
             if len(matches) == 1:
                 previous = matches[0]
-        if previous is not None and previous.get("resolution") in ("keep", "redact"):
+        if previous is not None and previous.get("user_choice") in ("keep", "redact"):
+            item["user_choice"] = previous["user_choice"]
+            if item["user_choice"] == "keep":
+                item["selected"] = False
+            else:
+                item["selected"] = True
+        elif (previous is not None and "type_defaults" not in prior and
+              previous.get("resolution") in ("keep", "redact")):
             if previous["resolution"] == "keep":
                 item["selected"] = False
                 item["resolution"] = "keep"
@@ -1024,7 +1176,7 @@ def _preserve_review_decisions(candidates, unlocated, prior):
     old_unlocated = {x["id"]: x for x in prior.get("unlocated_candidates", [])}
     for item in unlocated:
         previous = old_unlocated.get(item["id"], {})
-        for key in ("status", "region_id"):
+        for key in ("status", "region_id", "user_choice"):
             if key in previous:
                 item[key] = previous[key]
 
@@ -1141,19 +1293,29 @@ def update(root, sid, req):
         if req.get("revision") != p["revision"]:
             raise ValueError("页面已更新，请刷新后再操作")
         action = req.get("action")
+        project_actions = {"type-default-toggle", "type-default-reset", "all-keep"}
         page_no = req.get("page")
-        if not isinstance(page_no, int) or not 1 <= page_no <= len(p["pages"]):
-            raise ValueError("页码无效")
-        page = p["pages"][page_no - 1]
+        if action in project_actions:
+            page = None
+        else:
+            if not isinstance(page_no, int) or not 1 <= page_no <= len(p["pages"]):
+                raise ValueError("页码无效")
+            page = p["pages"][page_no - 1]
         snapshot = None
-        if action in ("candidate", "type-toggle", "region-add", "region-update",
+        if action in ("candidate", "type-toggle", "type-default-toggle",
+                      "type-default-reset", "all-keep", "region-add", "region-update",
                       "region-delete", "unlocated-keep", "coverage-bind", "region-from-candidates", "candidates-keep"):
             snapshot = {"candidates": json.loads(json.dumps(p["candidates"])),
                         "regions": json.loads(json.dumps(p["regions"])),
                         "unlocated_candidates": json.loads(json.dumps(
                             p.get("unlocated_candidates", []))),
                         "reviewed": [x["reviewed"] for x in p["pages"]],
-                        "coverage_links": json.loads(json.dumps(p.get("coverage_links", [])))}
+                        "coverage_links": json.loads(json.dumps(p.get("coverage_links", []))),
+                        "type_defaults": json.loads(json.dumps(p.get("type_defaults"))),
+                        "type_choices": json.loads(json.dumps(p.get("type_choices", {}))),
+                        "has_type_defaults": "type_defaults" in p}
+        if action in project_actions or action in ("candidate", "type-toggle"):
+            _migrate_legacy_type_state(p)
         if action == "undo":
             history = p.get("undo", [])
             if not history:
@@ -1163,8 +1325,47 @@ def update(root, sid, req):
             p["regions"] = prior["regions"]
             p["coverage_links"] = prior.get("coverage_links", [])
             p["unlocated_candidates"] = prior.get("unlocated_candidates", [])
+            p["type_choices"] = prior.get("type_choices", {})
+            if prior.get("has_type_defaults", "type_defaults" in prior):
+                p["type_defaults"] = prior.get("type_defaults") or {}
+            else:
+                p.pop("type_defaults", None)
             for state, reviewed in zip(p["pages"], prior["reviewed"]):
                 state["reviewed"] = reviewed
+        elif action == "type-default-toggle":
+            type_id = req.get("type")
+            enabled = req.get("enabled")
+            valid_types = {item.get("type") for item in
+                           p.get("candidates", []) + p.get("unlocated_candidates", [])}
+            valid_types.update(DEFAULT_TYPE_DEFAULTS)
+            if type_id not in valid_types or not isinstance(enabled, bool):
+                raise ValueError("项目类型默认设置无效")
+            p.setdefault("type_defaults", {})[type_id] = enabled
+            p.setdefault("type_choices", {})[type_id] = enabled
+        elif action == "type-default-reset":
+            type_id = req.get("type")
+            valid_types = {item.get("type") for item in
+                           p.get("candidates", []) + p.get("unlocated_candidates", [])}
+            valid_types.update(DEFAULT_TYPE_DEFAULTS)
+            if type_id not in valid_types:
+                raise ValueError("项目类型无效")
+            p.setdefault("type_defaults", {})[type_id] = _default_type_enabled(type_id)
+            p.setdefault("type_choices", {}).pop(type_id, None)
+            for item in p.get("candidates", []) + p.get("unlocated_candidates", []):
+                if item.get("type") == type_id:
+                    item.pop("user_choice", None)
+                    if item.get("status") == "keep":
+                        item["status"] = "pending"
+        elif action == "all-keep":
+            type_ids = {item.get("type") for key in
+                        ("candidates", "unlocated_candidates")
+                        for item in p.get(key, []) if item.get("type")}
+            type_ids.update(DEFAULT_TYPE_DEFAULTS)
+            p["type_defaults"] = {type_id: False for type_id in type_ids}
+            p["type_choices"] = {type_id: False for type_id in type_ids}
+            for item in p.get("candidates", []) + p.get("unlocated_candidates", []):
+                if item.get("user_choice") == "redact":
+                    item.pop("user_choice", None)
         elif action == "review":
             page["reviewed"] = True
             # 识别失败的页必须由用户显式勾选「我已检查该页预览，确认无未处理的敏感信息」才放行导出。
@@ -1176,6 +1377,7 @@ def update(root, sid, req):
                 raise ValueError("替换项无效")
             if req["selected"] and _candidate_render_plan(item, page)["mode"] == "none":
                 raise ValueError("该项缺少有效坐标，请在原页框选遮盖或选择保留")
+            item["user_choice"] = "redact" if req["selected"] else "keep"
             item["selected"] = req["selected"]
             item["resolution"] = "redact" if req["selected"] else "keep"
             item.pop("auto_applied", None)
@@ -1190,6 +1392,7 @@ def update(root, sid, req):
             for item in items:
                 if req["selected"] and _candidate_render_plan(item, pages_by_no.get(page_no))["mode"] == "none":
                     continue
+                item["user_choice"] = "redact" if req["selected"] else "keep"
                 item["selected"] = req["selected"]
                 if req["selected"]:
                     item["resolution"] = "redact"
@@ -1209,9 +1412,9 @@ def update(root, sid, req):
                 raise ValueError("请仅选择当前页的位置")
             for ref, item in items:
                 if ref["collection"] == "candidates":
-                    item.update(selected=False, resolution="keep")
+                    item.update(selected=False, user_choice="keep", resolution="keep")
                 else:
-                    item["status"] = "keep"
+                    item.update(status="keep", user_choice="keep")
                 p["coverage_links"] = [link for link in p.get("coverage_links", []) if link["candidate_ref"] != ref]
             page["reviewed"] = False
         elif action == "region-from-candidates":
@@ -1243,6 +1446,7 @@ def update(root, sid, req):
             if item is None or item.get("status", "pending") != "pending":
                 raise ValueError("待定位项无效或已处理")
             item["status"] = "keep"
+            item["user_choice"] = "keep"
             page["reviewed"] = False
         elif action in ("region-add", "region-update"):
             box = req.get("bbox")
@@ -1275,7 +1479,16 @@ def update(root, sid, req):
                 if item is None:
                     raise ValueError("遮盖区域不存在")
                 item["bbox"] = box
-                # 几何改变会使旧关联失效；未知位置不能自动续认已覆盖。
+                if item.get("resolves_id"):
+                    resolves_id = item["resolves_id"]
+                    candidate = next((x for x in p.get("unlocated_candidates", [])
+                                      if x["id"] == resolves_id), None)
+                    if candidate and candidate.get("status") == "manual-covered":
+                        candidate["status"] = "pending"
+                        candidate.pop("region_id", None)
+                    p["coverage_links"] = [link for link in p.get("coverage_links", [])
+                                           if link.get("candidate_ref") != {
+                                               "collection": "unlocated_candidates", "id": resolves_id}]
             page["reviewed"] = False
         elif action == "region-delete":
             before = len(p["regions"])
@@ -1312,11 +1525,17 @@ def update(root, sid, req):
         if snapshot is not None:
             p.setdefault("undo", []).append(snapshot)
             p["undo"] = p["undo"][-10:]
-        if action not in ("review", "undo"):
+        if page is None:
+            for state in p["pages"]:
+                state["content_revision"] = state.get("content_revision", 0) + 1
+                state["reviewed"] = False
+                state["revision"] += 1
+        elif action not in ("review", "undo"):
             page["content_revision"] = page.get("content_revision", 0) + 1
         if action == "review":
             page["reviewed_content_revision"] = page.get("content_revision", 0)
-        page["revision"] += 1
+        if page is not None:
+            page["revision"] += 1
         p["revision"] += 1
         _normalize_review(p)
         _invalidate_output(root, sid, p)
@@ -1527,8 +1746,9 @@ def _normalize_review(project):
                     item.get("resolution") not in ("keep", "redact", "manual-covered")):
                 entity = _entity_confidence(item)
                 ocr = _ocr_confidence(item)
-                excluded = (item.get("policy_excluded") or
-                            item.get("type") == "NUMBER_CANDIDATE")
+                excluded = (item.get("type") == "NUMBER_CANDIDATE" or
+                            ("type_defaults" not in project and
+                             item.get("policy_excluded")))
                 selected = (not excluded and _candidate_replaceable(item) and
                             entity is not None and entity >= ENTITY_AUTO_SELECT_THRESHOLD and
                             (item.get("source") != "ocr" or
@@ -1568,26 +1788,28 @@ def _normalize_review(project):
 
 
 def evaluate_review(project):
-    """同一快照求值：已检出的未处置项必须处理或明确保留，不能知悉后跳过。"""
+    """同一快照下统一求值。未完成处置属于硬门槛，red_flags供一次确认使用。"""
     pages = {x.get("page"): x for x in project.get("pages", [])}
     valid_links = [x for x in project.get("coverage_links", []) if _link_valid(project, x)]
     linked = {(x["candidate_ref"]["collection"], x["candidate_ref"]["id"]) for x in valid_links}
     confirmed_regions = {rid for x in valid_links for rid in x["region_ids"]}
     states, pending = [], []
-    policy_excluded = Policy.excluded_types(project.get("policy_id", Policy.PRESERVE_TRANSACTION))
     for collection in ("candidates", "unlocated_candidates"):
         for item in project.get(collection, []):
+            effective = _effective_candidate_state(project, item)
             reason = _candidate_review_reasons(item)
             plan_mode = "none"
             if collection == "candidates":
                 plan_mode = _candidate_render_plan(item, pages.get(item.get("page")))["mode"]
-            if item.get("resolution") == "keep" or item.get("status") == "keep":
+            if effective["state"] == "keep":
                 status = "keep"
-            elif item.get("policy_excluded", item.get("type") in policy_excluded):
+            elif effective["state"] == "policy-excluded":
                 status = "policy-excluded"
             elif (collection, item.get("id")) in linked:
                 status = "manual-covered"
-            elif collection == "candidates" and item.get("selected") and plan_mode != "none":
+            elif effective["state"] == "type-default-keep":
+                status = "type-default-keep"
+            elif collection == "candidates" and effective["selected"] and plan_mode != "none":
                 # 选中且按真实框可绘制即为已处置；box-replace 同样是机器完成。
                 status = "redact" if plan_mode == "replace" else "redact-box"
             else:
@@ -1598,6 +1820,11 @@ def evaluate_review(project):
                 covered = bool(boxes and page) and all(rectangle_union_covers(b, regions, page) for b in boxes)
                 if collection == "candidates" and covered:
                     status = "covered"
+                elif collection == "candidates" and boxes and page and \
+                        all(_valid_review_box(b, page) for b in boxes):
+                    # 保留optional状态供页面展示操作，但未明确处置前仍属于待处理。
+                    status = "optional"
+                    pending.append(item)
                 else:
                     status = "pending"
                     if not boxes:
@@ -1607,6 +1834,7 @@ def evaluate_review(project):
                     pending.append(item)
             states.append({"candidate_ref": {"collection": collection, "id": item.get("id")},
                            "page": item.get("page"), "state": status,
+                           "state_source": effective["source"],
                            "render_mode": plan_mode if status in ("redact", "redact-box") else None,
                            "can_auto_redact": collection == "candidates" and plan_mode != "none",
                            "auto_applied": item.get("auto_applied") or None,
@@ -1624,14 +1852,17 @@ def evaluate_review(project):
     if project.get("stage") in ("failed", "cancelled"):
         red.append({"code": "PDF_SCAN_STOPPED",
                     "action": "扫描已停止，未完成识别的页面将按原文导出"})
+    hard_issues = []
     if pending:
         _pages = sorted({x.get("page") for x in pending if x.get("page") is not None})
         _note = ("（第" + "、".join(str(n) for n in _pages) + "页）" if _pages else "")
-        red.append({"code": "PDF_DISPOSITION_REQUIRED", "count": len(pending),
-                    "action": "有 %d 处敏感内容尚未处理%s，请先处理或明确保留后再导出" %
-                    (len(pending), _note)})
-    applied_any = (any(x.get("selected") for x in project.get("candidates", [])) or
-                   project.get("regions"))
+        hard_issues.append({"code": "PDF_DISPOSITION_REQUIRED", "count": len(pending),
+                            "pages": _pages,
+                            "action": "有 %d 处敏感内容尚未处理%s，处理或明确保留后才能导出" %
+                            (len(pending), _note)})
+    applied_any = (any(_effective_candidate_state(project, x)["selected"] and
+                       _candidate_render_plan(x, pages.get(x.get("page")))["mode"] != "none"
+                       for x in project.get("candidates", [])) or project.get("regions"))
     has_findings = bool(project.get("candidates") or project.get("unlocated_candidates"))
     if has_findings and not applied_any:
         red.append({"code": "PDF_ZERO_APPLIED",
@@ -1639,12 +1870,11 @@ def evaluate_review(project):
     return {"states": states, "pending": pending, "unreviewed": unreviewed,
             "reviewed_pages": len(pages) - len(unreviewed), "total_pages": len(pages),
             "pending_occurrences": len(pending), "revision": project.get("revision"),
-            "hard_issues": [x for x in red if x["code"] == "PDF_DISPOSITION_REQUIRED"],
-            "soft_ack_required": False,
+            "hard_issues": hard_issues, "soft_ack_required": False,
             "red_flags": red,
-            "can_export": project.get("stage") != "processing" and not pending,
-            "ready_for_export": project.get("stage") != "processing" and not pending,
-            "next_actions": [x["action"] for x in red]}
+            "can_export": project.get("stage") != "processing" and not hard_issues,
+            "ready_for_export": project.get("stage") != "processing" and not hard_issues,
+            "next_actions": [x["action"] for x in hard_issues + red]}
 
 
 def _pending_sensitive(project):
@@ -1677,17 +1907,15 @@ def export_report(root, sid):
 def _export_report_project(p):
     """导出前检查。返回 {'hard': [], 'red': [...], 'soft': [...]}（中文条目）。
 
-    硬拦（hard）：检出内容未处置；扫描运行中由 export() 直接拒绝。
-    红档（red）：其余风险在导出前一次知悉，不得绕过硬拦。
+    硬拦（hard）：未处置候选及技术性错误；扫描运行中由 export() 直接拒绝。
+    红档（red）：建议处理后导出；存在红档时导出前一次确认（拍板项1）。
     软提示（soft）：非阻断状态区摘要；导出区不出现坐标/几何诊断与低分提醒（要求4）。
     """
     hard, red, soft = [], [], []
-    policy_excluded = Policy.excluded_types(
-        p.get("policy_id", Policy.PRESERVE_TRANSACTION))
     evaluation = evaluate_review(p)
-    hard.extend(flag["action"] for flag in evaluation["hard_issues"])
+    hard.extend(issue["action"] for issue in evaluation.get("hard_issues", []))
     red.extend(flag["action"] for flag in evaluation["red_flags"]
-               if flag["code"] not in ("PDF_STAGE_PROCESSING", "PDF_DISPOSITION_REQUIRED"))
+               if flag["code"] != "PDF_STAGE_PROCESSING")
     soft.append(
         "自动识别无法穷尽文书中的全部敏感字段，识别结果也可能存在偏差；未识别到的内容将按原文保留。外发前请人工核对导出的文件。")
     soft.append(
@@ -1704,14 +1932,19 @@ def _export_report_project(p):
     if supplement_incomplete:
         page_labels = "、".join(str(x["page"]) for x in supplement_incomplete)
         soft.append("第 %s 页未取得补充OCR结果，请人工检查" % page_labels)
-    default_off = [x for x in p["candidates"]
-                   if not x.get("selected") and
-                   x.get("policy_excluded", x.get("type") in policy_excluded)]
-    default_off_count = len(default_off) + sum(
-        1 for x in p.get("unlocated_candidates", []) if x.get("policy_excluded"))
-    if default_off_count:
-        soft.append("%s策略下金额、日期共 %d 条默认保留" %
-                    (Policy.label(p.get("policy_id")), default_off_count))
+    states = evaluation.get("states") or []
+    type_default_kept = sum(1 for row in states if row.get("state") == "type-default-keep")
+    user_kept = sum(1 for row in states if row.get("state") == "keep")
+    policy_kept = sum(1 for row in states if row.get("state") == "policy-excluded")
+    if type_default_kept:
+        soft.append("按用户明确选择的项目类型保留 %d 条候选；单处人工选择另行统计" % type_default_kept)
+    if user_kept:
+        soft.append("用户手动选择保留 %d 条候选" % user_kept)
+    if policy_kept:
+        soft.append("旧项目策略兼容保留 %d 条候选" % policy_kept)
+    if p.get("regions"):
+        soft.append("当前保留 %d 处手工遮盖区域；关闭类型或执行“全部不脱敏”不会删除这些区域" %
+                    len(p["regions"]))
     below_display = int((p.get("scan_stats") or {}).get("below_display_floor") or 0)
     if below_display:
         by_page = (p.get("scan_stats") or {}).get("below_display_floor_by_page") or []
@@ -1722,13 +1955,12 @@ def _export_report_project(p):
         suffix = "（%s）" % location_summary if location_summary else ""
         soft.append("另有 %d 条低置信命中未列入候选清单%s，请检查对应页面" %
                     (below_display, suffix))
-    states = evaluation.get("states") or []
     state_count = lambda state: sum(1 for row in states if row.get("state") == state)
     replaced = state_count("redact")
     boxed = state_count("redact-box")
     covered = state_count("covered") + state_count("manual-covered")
-    preserved = (state_count("keep") + state_count("policy-excluded") +
-                 state_count("optional"))
+    preserved = (state_count("keep") + state_count("type-default-keep") +
+                 state_count("policy-excluded"))
     applied_states = {"redact", "redact-box", "covered", "manual-covered"}
     auto_processed = sum(1 for row in states
                          if row.get("auto_applied") and
@@ -1739,22 +1971,28 @@ def _export_report_project(p):
     return {"hard": hard, "red": red, "soft": soft}
 
 
+class PdfDispositionRequired(ValueError):
+    """Raised when a PDF project still has candidates requiring a decision."""
+
+    code = "PDF_DISPOSITION_REQUIRED"
+
+
 def export(root, sid, revision=None, confirmed=False):
     with _lock(sid):
         p = load(root, sid)
         _rules_snapshot(root, sid, p)
-        # 在同一项目锁内检查，风险知悉不能越过待处置项。
+        # 扫描运行中和存在未处置项时均不导出；失败/取消仍按当前快照走红档确认。
         if p["stage"] == "processing":
             raise ValueError("扫描仍在进行，请等待完成后再导出")
         _report = _export_report_project(p)
         if _report["hard"]:
-            raise ValueError("；".join(_report["hard"]))
+            raise PdfDispositionRequired(_report["hard"][0])
         if _report["red"] and not confirmed:
-            # 一次知悉仅适用于识别失败页、扫描停止和零处置等其余风险。
+            # 红档一次确认（拍板项1）：识别失败页 / 未定位命中 / 扫描停止 / 零处置。
             return {"needs_confirm": True, "red": _report["red"], "notes": _report["soft"]}
         pages_by_no = {x.get("page"): x for x in p["pages"]}
         render_candidates = [x for x in p["candidates"]
-                             if x.get("selected") and
+                             if _effective_candidate_state(p, x)["selected"] and
                              _candidate_render_plan(x, pages_by_no.get(x.get("page")))["mode"] != "none"]
         source = original(root, sid, p)
         import pypdfium2 as pdfium

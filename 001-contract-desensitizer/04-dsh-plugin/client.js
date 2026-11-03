@@ -199,7 +199,7 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
           btn('停止本机工具',()=>request('stop'))))),
       (error || state.error) && h('p',{role:'alert',className:'redactor-alert'},error || errors[state.error] || '操作未完成，请重试。'),
       h('div',{className:'redactor-body'},
-        state.stage === 'ready' ? h('iframe',{ref:frame,src:state.url,title:'本机文书脱敏与复核',referrerPolicy:'no-referrer',sandbox:'allow-scripts allow-same-origin allow-downloads allow-forms allow-popups'}) :
+        state.stage === 'ready' ? h('iframe',{ref:frame,src:state.url,title:'本机文书脱敏与复核',referrerPolicy:'no-referrer',sandbox:'allow-scripts allow-same-origin allow-downloads allow-forms allow-popups allow-modals'}) :
           h('div',{className:'redactor-start'},h('h1',null,'上传文书，确认后再导出'),h('p',null,'1 上传文书　→　2 复核敏感内容　→　3 导出脱敏文件'),h('p',null,'文书在本机处理。支持Word、PDF、TXT、Markdown。自动识别可能漏项，外发前请核对最终文件。'),h('p',null,busy?'环境准备期间可留在此页等待。':'点击右上角“打开脱敏工具”开始。首次准备依赖需要联网；停止工具不会删除已保存的项目。'),h(CommunityContact)),
         drawer && state.stage === 'ready' && h('aside',{className:'redactor-drawer','aria-label':'Agent识别规则助手'},
           h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}},h('h3',null,'调整识别规则'),btn('收起',()=>setDrawer(false))),

@@ -78,7 +78,7 @@ from contract_sensitive_detector import (
 
 # --------------------------------------------------------------------- 常量 --
 
-__version__ = "1.3.0-dev"
+__version__ = "1.3.0"
 ENGINE_NAME = "contract_redactor"
 
 
@@ -298,7 +298,7 @@ class DocxRedactor(BaseRedactor):
         para_text_full, units = D.docx_para_units(para_elem)
         para_text = para_text_full.rstrip("\n")
 
-        # fail-safe（R6）：两侧口径必须一致。历史缺陷正是「检测折算 tab、改写忽略 tab」，
+        # fail-safe：两侧口径必须一致，避免检测与改写对制表符的处理不一致，
         # 使替换区间整体右移——明文残留（如手机号前 5 位）且正文被破坏，比漏检更危险。
         # 一旦不一致就整段跳过：漏检可见、可人工补录。
         if para_text != block_text:
@@ -551,7 +551,7 @@ def build_ops_from_report(report: Dict[str, Any], enabled_types: set,
     ops: List[RedactOp] = []
     skipped: List[RedactOp] = []
     for it in report["items"]:
-        if it["type"] not in enabled_types:
+        if keep is None and it["type"] not in enabled_types:
             continue
         replacement = mask_value(it["value"], it["type"])
         for o in it["occurrences"]:
@@ -620,7 +620,8 @@ def _docx_operation_positions(op: RedactOp) -> Optional[Tuple[Tuple[str, str, st
     if physical:
         return physical
     target_kind = str((op.target or {}).get("kind", ""))
-    if target_kind in {"external_relationship_target", "vml_textpath"}:
+    if target_kind in {"external_relationship_target", "vml_textpath",
+                       "docx_readable_attribute"}:
         start, end = op.local_start, op.local_end
         if start < 0 or end <= start:
             return None
@@ -733,13 +734,15 @@ def _coalesce_exact_docx_targets(operations: List[RedactOp],
                          op.end == ordered[0].end for op in unique)
         text_kinds = {"text", "revision_visible_text", "revision_rejected_text",
                       "revision_deleted_text", "comment_body",
-                      "external_relationship_target", "vml_textpath"}
+                      "external_relationship_target", "vml_textpath",
+                      "docx_readable_attribute"}
         if not exact:
             if any(str((op.target or {}).get("kind", "text")) not in text_kinds
                    for op in unique):
                 raise ValueError("DOCX写回目标存在无法安全合并的部分重叠")
             target_kind = str((unique[0].target or {}).get("kind", "text"))
-            if target_kind in {"external_relationship_target", "vml_textpath"}:
+            if target_kind in {"external_relationship_target", "vml_textpath",
+                               "docx_readable_attribute"}:
                 spans = [(op.local_start, op.local_end) for op in unique]
                 if any(start < 0 or end <= start or
                        (op.start - start) != (op.end - end)
@@ -890,6 +893,52 @@ def _expected_plain_story_text(source, full_text, operations,
     return (manifest, skipped) if return_skipped else manifest
 
 
+def _publish_staged_files(pairs, delete_paths=()):
+    """Publish a set of staged files and restore prior targets if any step fails."""
+    targets = list(dict.fromkeys([target for _staged, target in pairs] +
+                                 list(delete_paths)))
+    backups = {}
+    changed = []
+    try:
+        for target in targets:
+            if not os.path.exists(target):
+                backups[target] = None
+                continue
+            fd, backup = tempfile.mkstemp(
+                prefix=".publish-backup-", dir=os.path.dirname(os.path.abspath(target)))
+            os.close(fd)
+            shutil.copy2(target, backup)
+            backups[target] = backup
+        try:
+            for staged, target in pairs:
+                os.replace(staged, target)
+                changed.append(target)
+            for target in delete_paths:
+                if os.path.exists(target):
+                    os.unlink(target)
+                    changed.append(target)
+        except Exception:
+            for target in reversed(changed):
+                backup = backups.get(target)
+                if backup and os.path.exists(backup):
+                    os.replace(backup, target)
+                    backups[target] = None
+                elif os.path.exists(target):
+                    os.unlink(target)
+            raise
+    finally:
+        for backup in backups.values():
+            if backup and os.path.exists(backup):
+                os.unlink(backup)
+
+
+def _docx_stage_path(final_path, prefix):
+    parent = os.path.dirname(os.path.abspath(final_path)) or "."
+    fd, staged = tempfile.mkstemp(prefix=prefix, suffix=".docx", dir=parent)
+    os.close(fd)
+    return staged
+
+
 def redact_file(source: str,
                 selection: Optional[Dict[str, Any]] = None,
                 types: Optional[Sequence[str]] = None,
@@ -917,6 +966,7 @@ def redact_file(source: str,
                 external_relationship_action: str = "remove",
                 external_relationship_acknowledged: bool = False,
                 external_relationship_digest: Optional[str] = None,
+                _stage_internal: bool = False,
                 ) -> Dict[str, Any]:
     """对单个文件执行「检测 → 选择 → 改写」的端到端流程。
 
@@ -933,6 +983,41 @@ def redact_file(source: str,
         raise ValueError("必须提供 --selection 或 --types")
 
     ext = os.path.splitext(source)[1].lower()
+    if ext == ".docx" and not _stage_internal:
+        final_path = os.path.abspath(out_path or os.path.join(
+            os.path.dirname(source) or ".",
+            os.path.splitext(os.path.basename(source))[0] + "_脱敏.docx"))
+        if os.path.abspath(source) == final_path:
+            raise ValueError("脱敏输出不能覆盖源DOCX")
+        staged = _docx_stage_path(final_path, ".redact-stage-")
+        args = locals().copy()
+        args.update(out_path=staged, _stage_internal=True)
+        parameter_names = redact_file.__code__.co_varnames[:redact_file.__code__.co_argcount]
+        args = {name: args[name] for name in parameter_names}
+        staged_mapping = staged + ".mapping.json"
+        staged_log = staged + ".redaction.log"
+        final_mapping = final_path + ".mapping.json"
+        final_log = final_path + ".redaction.log"
+        try:
+            result = redact_file(**args)
+            pairs = [(staged, final_path)]
+            delete_paths = []
+            if result.get("mapping") and os.path.isfile(staged_mapping):
+                pairs.append((staged_mapping, final_mapping))
+                result["mapping"] = final_mapping
+            else:
+                delete_paths.append(final_mapping)
+                result["mapping"] = None
+            if result.get("log") and os.path.isfile(staged_log):
+                pairs.append((staged_log, final_log))
+                result["log"] = final_log
+            _publish_staged_files(pairs, delete_paths)
+            result["output"] = final_path
+            return result
+        finally:
+            for path in (staged, staged_mapping, staged_log):
+                if os.path.exists(path):
+                    os.unlink(path)
     if comment_mode is None:
         comment_mode = "redact_preserve"
     if ext == ".docx" and comment_mode not in (
@@ -1035,9 +1120,12 @@ def redact_file(source: str,
                            op.target.get("kind") == "external_relationship_target"]
     vml_target_ops = [op for op in ops if op.target and
                       op.target.get("kind") == "vml_textpath"]
+    docx_attribute_target_ops = [op for op in ops if op.target and
+                                 op.target.get("kind") == "docx_readable_attribute"]
     ops = [op for op in ops if not (op.target and
                                     op.target.get("kind") in {
-                                        "external_relationship_target", "vml_textpath"})]
+                                        "external_relationship_target", "vml_textpath",
+                                        "docx_readable_attribute"})]
     if external_relationship_action != "preserve":
         external_target_ops = []
     if ext == ".docx" and comment_mode in ("remove_all", "preserve_unredacted"):
@@ -1051,7 +1139,7 @@ def redact_file(source: str,
         (external_relationship_action == "remove" or
          (external_relationship_action == "preserve" and
           external_relationship_acknowledged)))
-    if external_clean and not allow_no_replacements and not (ops or external_target_ops or vml_target_ops) and not confirmed_unsupported_only and not confirmed_unredacted_content_only and not confirmed_external_cleanup_only and not (
+    if external_clean and not allow_no_replacements and not (ops or external_target_ops or vml_target_ops or docx_attribute_target_ops) and not confirmed_unsupported_only and not confirmed_unredacted_content_only and not confirmed_external_cleanup_only and not (
             comment_mode in ("remove_all", "preserve_unredacted") and
             comment_info and comment_info.related_parts):
         raise ValueError("没有可替换的内容，已停止外发导出")
@@ -1093,6 +1181,9 @@ def redact_file(source: str,
         for op in vml_target_ops:
             op.replacement = numberer.placeholder(
                 op.type_id, op.entity_value or op.value, op.label)
+        for op in docx_attribute_target_ops:
+            op.replacement = numberer.placeholder(
+                op.type_id, op.entity_value or op.value, op.label)
 
     if ext == ".docx":
         ops = _coalesce_exact_docx_targets(ops, restore_mode=restore_mode)
@@ -1100,6 +1191,8 @@ def redact_file(source: str,
             external_target_ops, restore_mode=restore_mode)
         vml_target_ops = _coalesce_exact_docx_targets(
             vml_target_ops, restore_mode=restore_mode)
+        docx_attribute_target_ops = _coalesce_exact_docx_targets(
+            docx_attribute_target_ops, restore_mode=restore_mode)
     if restore_mode:
         for op in ops:
             aliases = op.overlap_types or [op.type_id]
@@ -1292,12 +1385,25 @@ def redact_file(source: str,
             if os.path.exists(out_path):
                 os.unlink(out_path)
             raise
+    if ext == ".docx" and docx_attribute_target_ops:
+        try:
+            from contract_docx_revisions import rewrite_docx_readable_attribute_targets
+            attribute_result = rewrite_docx_readable_attribute_targets(
+                out_path, docx_attribute_target_ops)
+            if attribute_result.get("applied") != len(docx_attribute_target_ops):
+                raise ValueError("DOCX可读属性替换数量与已选项不一致")
+            result["applied"] += attribute_result["applied"]
+        except Exception:
+            if os.path.exists(out_path):
+                os.unlink(out_path)
+            raise
     if external_clean:
         try:
             if ext != ".docx":
                 raise ValueError("外发干净副本目前仅支持 Word .docx")
             selected_originals = list(dict.fromkeys(
-                op.value for op in (ops + external_target_ops + vml_target_ops)
+                op.value for op in (ops + external_target_ops + vml_target_ops +
+                                    docx_attribute_target_ops)
                 if op.value))
             review_ext.clean_docx(
                 out_path, selected_originals, comment_mode=comment_mode,
@@ -1407,7 +1513,8 @@ def redact_file(source: str,
     # 7.b) restore_mode：单独写 mapping.json；脱敏件不得携带原文映射。
     mapping_path: Optional[str] = None
     embedded_ok = False
-    if restore_mode and (mapping_records or external_target_ops or vml_target_ops):
+    if restore_mode and (mapping_records or external_target_ops or vml_target_ops or
+                         docx_attribute_target_ops):
         mapping_path = out_path + ".mapping.json"
         sha = ""
         try:
@@ -1457,12 +1564,35 @@ def redact_file(source: str,
                 **({"overlap_originals": op.overlap_originals}
                    if len(op.overlap_originals) > 1 else {}),
             })
+        docx_attribute_target_records = []
+        for op in docx_attribute_target_ops:
+            target = op.target or {}
+            docx_attribute_target_records.append({
+                "type": op.type_id, "label": op.label,
+                "kind": "docx_readable_attribute", "part": target.get("part", ""),
+                "node_path": target.get("node_path", ""),
+                "attribute": target.get("attribute", ""),
+                "element": target.get("element", ""),
+                "original": op.value, "placeholder": op.replacement,
+                "written": target.get("written", ""),
+                "order": int(target.get("output_order", 0)),
+                "source_target_sha256": target.get("source_target_sha256", ""),
+                "output_target_sha256": target.get("output_target_sha256", ""),
+                "structure_sha256": target.get("structure_sha256", ""),
+                "output_span": list(target.get("output_span") or []),
+                **({"types": op.overlap_types, "labels": op.overlap_labels}
+                   if len(op.overlap_types) > 1 else {}),
+                **({"overlap_masks": op.overlap_masks}
+                   if len(op.overlap_masks) > 1 else {}),
+                **({"overlap_originals": op.overlap_originals}
+                   if len(op.overlap_originals) > 1 else {}),
+            })
         mapping_payload = {
             "version": 2 if ext == ".docx" else 1,
             "schema": "contract-mapping/v2" if ext == ".docx" else "contract-mapping/v1",
             "engine": {"name": ENGINE_NAME, "version": __version__, "mode": "offline-restore"},
-            "source": {"path": os.path.abspath(source), "sha256": sha,
-                       "name": os.path.basename(source), "type": ext.lstrip(".")},
+            "source": {"sha256": sha, "name": os.path.basename(source),
+                       "type": ext.lstrip(".")},
             "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             **({"output": {
                 "sha256": D._sha256(out_path),
@@ -1473,7 +1603,11 @@ def redact_file(source: str,
                          str(row["target"].get("kind", "")).startswith(("revision_", "comment_"))) and
                         bool(row["target"].get("output_text_sha256")) and
                         bool(row["target"].get("output_structure_fingerprint"))
-                        for row in mapping_records)),
+                        for row in mapping_records) and all(
+                        bool(row.get("output_target_sha256")) and
+                        bool(row.get("source_target_sha256")) and
+                        bool(row.get("structure_sha256"))
+                        for row in docx_attribute_target_records)),
             }} if has_revisions else {}),
             "entities": _summarize_entities(mapping_records),
             "items": sorted(mapping_records, key=lambda r: (r.get("start", 0), r.get("end", 0))),
@@ -1481,6 +1615,8 @@ def redact_file(source: str,
                if external_target_records else {}),
             **({"vml_targets": vml_target_records}
                if vml_target_records else {}),
+            **({"docx_attribute_targets": docx_attribute_target_records}
+               if docx_attribute_target_records else {}),
         }
         mapping_dir = os.path.dirname(os.path.abspath(mapping_path))
         mapping_fd, mapping_stage = tempfile.mkstemp(prefix=".mapping-", suffix=".tmp",
@@ -2117,7 +2253,8 @@ def embed_mapping_in_docx(docx_path: str, mapping: Dict[str, Any]) -> bool:
 def restore_file(source: str,
                  mapping_path: Optional[str] = None,
                  out_path: Optional[str] = None,
-                 write_log: bool = True) -> Dict[str, Any]:
+                 write_log: bool = True,
+                 _stage_internal: bool = False) -> Dict[str, Any]:
     """把脱敏后的文件还原回原始文件（docx / txt / md）。
 
     source: 脱敏后文件路径（docx / txt / md；pdf 已被栅格化，不支持）
@@ -2136,6 +2273,32 @@ def restore_file(source: str,
     if ext not in (".docx", ".txt", ".md", ".markdown"):
         raise RuntimeError(
             f"暂不支持 {ext} 文件的还原；目前支持 .docx / .txt / .md")
+
+    if ext == ".docx" and not _stage_internal:
+        final_path = os.path.abspath(out_path or os.path.join(
+            os.path.dirname(source) or ".", _restore_name(source)))
+        if os.path.abspath(source) == final_path:
+            raise ValueError("还原输出不能覆盖源DOCX")
+        staged = _docx_stage_path(final_path, ".restore-stage-")
+        args = locals().copy()
+        args.update(out_path=staged, _stage_internal=True)
+        parameter_names = restore_file.__code__.co_varnames[:restore_file.__code__.co_argcount]
+        args = {name: args[name] for name in parameter_names}
+        staged_log = staged + ".restore.log"
+        final_log = final_path + ".restore.log"
+        try:
+            result = restore_file(**args)
+            pairs = [(staged, final_path)]
+            if result.get("log") and os.path.isfile(staged_log):
+                pairs.append((staged_log, final_log))
+                result["log"] = final_log
+            _publish_staged_files(pairs)
+            result["output"] = final_path
+            return result
+        finally:
+            for path in (staged, staged_log):
+                if os.path.exists(path):
+                    os.unlink(path)
 
     # 1) 优先看 docx 内部嵌的 mapping
     if not mapping_path:
@@ -2162,6 +2325,7 @@ def restore_file(source: str,
     mapping_items = mapping_payload.get("items", [])
     external_target_items = mapping_payload.get("external_targets", [])
     vml_target_items = mapping_payload.get("vml_targets", [])
+    docx_attribute_target_items = mapping_payload.get("docx_attribute_targets", [])
     if mapping_schema and not mapping_schema.startswith("contract-mapping/"):
         raise RuntimeError("mapping.json 的 schema 不识别：%s" % mapping_schema)
     is_v2_docx = ext == ".docx" and mapping_schema == "contract-mapping/v2"
@@ -2223,7 +2387,8 @@ def restore_file(source: str,
         mapping = load_mapping_sequences(mapping_path)
         comment_items = []
     if not mapping and not (is_v2_docx and (comment_items or targeted_restore or
-                                             external_target_items or vml_target_items)):
+                                             external_target_items or vml_target_items or
+                                             docx_attribute_target_items)):
         raise RuntimeError(f"mapping.json 内无占位符项：{mapping_path}")
 
     if targeted_restore:
@@ -2267,6 +2432,19 @@ def restore_file(source: str,
                 raise RuntimeError("VML文字路径还原数量与mapping不一致")
             result["applied"] = int(result.get("applied", 0)) + int(
                 vml_result.get("applied", 0))
+        except Exception:
+            if os.path.exists(out_path):
+                os.unlink(out_path)
+            raise
+    if is_v2_docx and docx_attribute_target_items:
+        try:
+            from contract_docx_revisions import restore_docx_readable_attribute_targets
+            attribute_result = restore_docx_readable_attribute_targets(
+                out_path, docx_attribute_target_items)
+            if attribute_result.get("applied") != len(docx_attribute_target_items):
+                raise RuntimeError("DOCX可读属性还原数量与mapping不一致")
+            result["applied"] = int(result.get("applied", 0)) + int(
+                attribute_result.get("applied", 0))
         except Exception:
             if os.path.exists(out_path):
                 os.unlink(out_path)
@@ -2316,6 +2494,38 @@ def restore_file(source: str,
 
 
 # ---------------------------------------------- 占位符模式脱敏 （嵌入主 redact_file） ------------------
+
+
+def redactor_selftest() -> int:
+    """内置自检：构造一个临时 txt + 几个 ops，跑 apply_to_text 验证。"""
+    text = "甲方张三，手机 13812345678，身份证 440305199001012347，住北京市海淀区中关村南大街5号。\n" \
+           "金额：人民币 1,280,000.00 元。\n"
+    ops = [
+        RedactOp(start=text.index("张三"), end=text.index("张三") + 2,
+                 type_id="PERSON_NAME", label="姓名", severity="high", confidence=0.9,
+                 value="张三", replacement="张**", location="L1"),
+        RedactOp(start=text.index("13812345678"), end=text.index("13812345678") + 11,
+                 type_id="PHONE_MOBILE", label="手机", severity="high", confidence=0.95,
+                 value="13812345678", replacement="138****5678", location="L1"),
+        RedactOp(start=text.index("440305199001012347"),
+                 end=text.index("440305199001012347") + 18,
+                 type_id="ID_CARD", label="身份证", severity="high", confidence=0.99,
+                 value="440305199001012347", replacement="440305********2347", location="L1"),
+    ]
+    red = TextRedactor("<selftest>", text, ops)
+    out, applied, skipped = red.apply_to_text(text)
+    fails = []
+    if "张**" not in out: fails.append("姓名未脱敏")
+    if "138****5678" not in out: fails.append("手机号未脱敏")
+    if "440305********2347" not in out: fails.append("身份证未脱敏")
+    if applied != 3: fails.append(f"applied={applied} (应为 3)")
+    print("== 改写器自检 ==")
+    if fails:
+        for f in fails: print("  [FAIL]", f)
+        return 1
+    print("  [PASS] 文本改写正确（applied=3, skipped=0）")
+    print(f"  原文 → 脱敏后：\n  {out.strip()[:120]}…")
+    return 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -2454,38 +2664,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"   审计日志 → {r['log']}")
     if r.get("mapping"):
         print(f"   映射文件 → {r['mapping']}  （占位符 ↔ 原文，支持 --restore 还原）")
-    return 0
-
-
-def redactor_selftest() -> int:
-    """内置自检：构造一个临时 txt + 几个 ops，跑 apply_to_text 验证。"""
-    text = "甲方张三，手机 13812345678，身份证 440305199001012347，住北京市海淀区中关村南大街5号。\n" \
-           "金额：人民币 1,280,000.00 元。\n"
-    ops = [
-        RedactOp(start=text.index("张三"), end=text.index("张三") + 2,
-                 type_id="PERSON_NAME", label="姓名", severity="high", confidence=0.9,
-                 value="张三", replacement="张**", location="L1"),
-        RedactOp(start=text.index("13812345678"), end=text.index("13812345678") + 11,
-                 type_id="PHONE_MOBILE", label="手机", severity="high", confidence=0.95,
-                 value="13812345678", replacement="138****5678", location="L1"),
-        RedactOp(start=text.index("440305199001012347"),
-                 end=text.index("440305199001012347") + 18,
-                 type_id="ID_CARD", label="身份证", severity="high", confidence=0.99,
-                 value="440305199001012347", replacement="440305********2347", location="L1"),
-    ]
-    red = TextRedactor("<selftest>", text, ops)
-    out, applied, skipped = red.apply_to_text(text)
-    fails = []
-    if "张**" not in out: fails.append("姓名未脱敏")
-    if "138****5678" not in out: fails.append("手机号未脱敏")
-    if "440305********2347" not in out: fails.append("身份证未脱敏")
-    if applied != 3: fails.append(f"applied={applied} (应为 3)")
-    print("== 改写器自检 ==")
-    if fails:
-        for f in fails: print("  [FAIL]", f)
-        return 1
-    print("  [PASS] 文本改写正确（applied=3, skipped=0）")
-    print(f"  原文 → 脱敏后：\n  {out.strip()[:120]}…")
     return 0
 
 

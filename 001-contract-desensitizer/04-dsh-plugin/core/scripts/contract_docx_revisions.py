@@ -26,6 +26,7 @@ VML = "{urn:schemas-microsoft-com:vml}"
 OFFICE = "{urn:schemas-microsoft-com:office:office}"
 OFFICE_WORD = "{urn:schemas-microsoft-com:office:word}"
 OFFICE_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
 MAX_UNPACKED_BYTES = 150 * 1024 * 1024
 MAX_MEMBERS = 20000
 MAX_DISPLAY_OBSERVATIONS = 250
@@ -1393,6 +1394,209 @@ def restore_vml_text_targets(docx_path: str,
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+    return {"applied": applied}
+
+
+DOCX_READABLE_ATTRIBUTES = {"descr", "title"}
+
+
+def _readable_attribute_node(element, attribute: str) -> bool:
+    return element.tag == WP + "docPr" and attribute in DOCX_READABLE_ATTRIBUTES
+
+
+def _attribute_structure_digest(element, attribute: str) -> str:
+    def shape(node, root=False):
+        attrs = sorted((name, value) for name, value in node.attrib.items()
+                       if not (root and name in DOCX_READABLE_ATTRIBUTES))
+        return (node.tag, attrs, [shape(child) for child in node
+                                  if isinstance(child.tag, str)])
+    payload = json.dumps(shape(element, True), ensure_ascii=False,
+                         separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def read_docx_readable_attribute_targets(path: str) -> List[Dict[str, Any]]:
+    """Read supported human-readable drawing metadata for candidate scanning."""
+    rows: List[Dict[str, Any]] = []
+    with zipfile.ZipFile(path, "r") as archive:
+        names = set(archive.namelist())
+        if (len(names) > MAX_MEMBERS or
+                sum(info.file_size for info in archive.infolist()) > MAX_UNPACKED_BYTES):
+            raise ValueError("DOCX包超过可读属性检查上限")
+        for part in sorted(name for name in names
+                           if name.lower().startswith("word/") and
+                           name.lower().endswith(".xml")):
+            try:
+                root = _parse_xml(archive.read(part))
+            except Exception as exc:
+                raise ValueError("DOCX部件无法安全检查可读属性：%s" % part) from exc
+            for element in root.iter(WP + "docPr"):
+                for attribute in sorted(DOCX_READABLE_ATTRIBUTES):
+                    value = element.get(attribute)
+                    if not value:
+                        continue
+                    rows.append({
+                        "part": part,
+                        "node_path": root.getroottree().getpath(element),
+                        "element": "wp:docPr",
+                        "attribute": attribute,
+                        "value": value,
+                        "target_sha256": hashlib.sha256(
+                            value.encode("utf-8")).hexdigest(),
+                        "structure_sha256": _attribute_structure_digest(
+                            element, attribute),
+                    })
+    return rows
+
+
+def _write_target_parts(docx_path: str, replacements: Dict[str, bytes]) -> None:
+    fd, tmp = tempfile.mkstemp(suffix=".docx", dir=os.path.dirname(os.path.abspath(docx_path)))
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(docx_path, "r") as source, \
+                zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as output:
+            for info in source.infolist():
+                output.writestr(info, replacements.get(info.filename,
+                                                       source.read(info.filename)))
+        os.replace(tmp, docx_path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def rewrite_docx_readable_attribute_targets(docx_path: str,
+                                           operations: List[Any]) -> Dict[str, int]:
+    """Rewrite selected spans in supported readable OOXML attributes."""
+    if not operations:
+        return {"applied": 0}
+    grouped: Dict[Tuple[str, str, str], List[Any]] = {}
+    for op in operations:
+        target = op.target or {}
+        key = (str(target.get("part", "")), str(target.get("node_path", "")),
+               str(target.get("attribute", "")))
+        if (target.get("kind") != "docx_readable_attribute" or
+                not key[0].lower().startswith("word/") or not key[1] or
+                key[2] not in DOCX_READABLE_ATTRIBUTES):
+            raise ValueError("DOCX可读属性目标类型无效")
+        grouped.setdefault(key, []).append(op)
+
+    replacements: Dict[str, bytes] = {}
+    applied = 0
+    with zipfile.ZipFile(docx_path, "r") as archive:
+        names = set(archive.namelist())
+        roots = {}
+        for part in {key[0] for key in grouped}:
+            if part not in names:
+                raise ValueError("DOCX可读属性部件缺失")
+            roots[part] = _parse_xml(archive.read(part))
+        for (part, node_path, attribute), ops in grouped.items():
+            root = roots[part]
+            matches = _xpath_target(root, node_path)
+            if len(matches) != 1 or not _readable_attribute_node(matches[0], attribute):
+                raise ValueError("DOCX可读属性目标缺失或不唯一：%s" % part)
+            element = matches[0]
+            current = element.get(attribute, "")
+            source_hash = hashlib.sha256(current.encode("utf-8")).hexdigest()
+            structure_hash = _attribute_structure_digest(element, attribute)
+            if ({str((op.target or {}).get("target_sha256") or "") for op in ops} !=
+                    {source_hash} or
+                    {str((op.target or {}).get("structure_sha256") or "")
+                     for op in ops} != {structure_hash}):
+                raise ValueError("DOCX可读属性内容或结构已变化，请重新检查")
+            ordered = sorted(ops, key=lambda op: (op.local_start, op.local_end))
+            cursor = 0
+            output_cursor = 0
+            pieces: List[str] = []
+            for order, op in enumerate(ordered):
+                start, end = int(op.local_start), int(op.local_end)
+                if (start < cursor or start < 0 or end <= start or end > len(current) or
+                        current[start:end] != op.value):
+                    raise ValueError("DOCX可读属性区间无效、重叠或与扫描文本不一致")
+                prefix = current[cursor:start]
+                pieces.append(prefix)
+                output_cursor += len(prefix)
+                written = str(op.replacement)
+                op.target.update(
+                    source_target_sha256=source_hash,
+                    output_order=order,
+                    output_span=[output_cursor, output_cursor + len(written)],
+                    written=written)
+                pieces.append(written)
+                output_cursor += len(written)
+                cursor = end
+                applied += 1
+            pieces.append(current[cursor:])
+            rewritten = "".join(pieces)
+            element.set(attribute, rewritten)
+            output_hash = hashlib.sha256(rewritten.encode("utf-8")).hexdigest()
+            for op in ordered:
+                op.target["output_target_sha256"] = output_hash
+            if _attribute_structure_digest(element, attribute) != structure_hash:
+                raise ValueError("DOCX可读属性替换改变了目标结构")
+            replacements[part] = _serialize(root)
+    _write_target_parts(docx_path, replacements)
+    return {"applied": applied}
+
+
+def restore_docx_readable_attribute_targets(
+        docx_path: str, records: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Restore readable attributes only when element, structure and value match."""
+    grouped: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
+    for row in records or []:
+        if (not isinstance(row, dict) or
+                row.get("kind") != "docx_readable_attribute" or
+                row.get("attribute") not in DOCX_READABLE_ATTRIBUTES):
+            raise RuntimeError("mapping DOCX可读属性记录无效")
+        grouped.setdefault((str(row.get("part", "")),
+                            str(row.get("node_path", "")),
+                            str(row.get("attribute", ""))), []).append(row)
+    if not grouped:
+        return {"applied": 0}
+
+    replacements: Dict[str, bytes] = {}
+    applied = 0
+    with zipfile.ZipFile(docx_path, "r") as archive:
+        names = set(archive.namelist())
+        roots = {}
+        for part in {key[0] for key in grouped}:
+            if part not in names or not part.lower().startswith("word/"):
+                raise RuntimeError("mapping DOCX可读属性部件无效")
+            roots[part] = _parse_xml(archive.read(part))
+        for (part, node_path, attribute), rows in grouped.items():
+            root = roots[part]
+            matches = _xpath_target(root, node_path)
+            if len(matches) != 1 or not _readable_attribute_node(matches[0], attribute):
+                raise RuntimeError("mapping DOCX可读属性目标缺失或不唯一")
+            element = matches[0]
+            current = element.get(attribute, "")
+            output_hashes = {str(row.get("output_target_sha256") or "") for row in rows}
+            source_hashes = {str(row.get("source_target_sha256") or "") for row in rows}
+            structure_hashes = {str(row.get("structure_sha256") or "") for row in rows}
+            structure_hash = _attribute_structure_digest(element, attribute)
+            if (len(output_hashes) != 1 or not next(iter(output_hashes)) or
+                    hashlib.sha256(current.encode("utf-8")).hexdigest() !=
+                    next(iter(output_hashes)) or len(source_hashes) != 1 or
+                    not next(iter(source_hashes)) or structure_hashes != {structure_hash}):
+                raise RuntimeError("DOCX可读属性与mapping摘要不一致")
+            restored = current
+            for row in sorted(rows, key=lambda item: int(item.get("order", 0)),
+                              reverse=True):
+                span = row.get("output_span") or []
+                if len(span) != 2:
+                    raise RuntimeError("mapping DOCX可读属性还原区间无效")
+                start, end = int(span[0]), int(span[1])
+                written = str(row.get("written") or "")
+                original = str(row.get("original") or "")
+                if (start < 0 or end < start or end > len(restored) or
+                        restored[start:end] != written):
+                    raise RuntimeError("DOCX属性占位符缺失或已变化，严格还原已中止")
+                restored = restored[:start] + original + restored[end:]
+                applied += 1
+            if hashlib.sha256(restored.encode("utf-8")).hexdigest() != next(iter(source_hashes)):
+                raise RuntimeError("DOCX可读属性还原结果与源摘要不一致")
+            element.set(attribute, restored)
+            replacements[part] = _serialize(root)
+    _write_target_parts(docx_path, replacements)
     return {"applied": applied}
 
 

@@ -1,10 +1,17 @@
-"""Windows OCR: use RapidOCR; try Windows OCR only on RapidOCR import errors."""
+"""Windows OCR: isolate native OCR imports in a disposable worker process."""
 from __future__ import annotations
 
+import atexit
 import asyncio
+import ctypes
+import json
 import os
+import queue
+import subprocess
+import sys
 import threading
 import tempfile
+import time
 from pathlib import Path
 from PIL import Image
 
@@ -14,6 +21,29 @@ _ENGINE = None
 # Windows 两条路径都没有超时 —— 个别页面可能把整批处理卡死。此处统一加超时，
 # 超时按「本页识别失败」处理（走 H2 的失败页路径，由用户在核对页手工确认/框选）。
 OCR_TIMEOUT_SEC = float(os.environ.get("CONTRACT_PDF_OCR_TIMEOUT", "90"))
+OCR_START_TIMEOUT_SEC = float(os.environ.get("CONTRACT_PDF_OCR_START_TIMEOUT", "30"))
+OCR_MAX_RESPONSE_BYTES = int(os.environ.get(
+    "CONTRACT_PDF_OCR_MAX_RESPONSE_BYTES", str(8 * 1024 * 1024)))
+
+
+class OcrError(RuntimeError):
+    """Base class for worker lifecycle and protocol failures."""
+
+
+class OcrTimeout(OcrError):
+    pass
+
+
+class OcrCrashed(OcrError):
+    pass
+
+
+class OcrProtocolError(OcrError):
+    pass
+
+
+class OcrUnavailable(OcrError):
+    pass
 
 
 def _rect(quad):
@@ -34,7 +64,7 @@ def _word_rows(raw):
     return out
 
 
-def _rapid_once(path):
+def _rapid_engine():
     global _ENGINE
     import rapidocr
     from rapidocr import RapidOCR
@@ -51,7 +81,11 @@ def _rapid_once(path):
         if font is None:
             raise RuntimeError("缺少本机 OCR 字体，请手工框选")
         _ENGINE = RapidOCR(params={"Global.font_path": font})
-    result = _ENGINE(path, return_word_box=True, return_single_char_box=True)
+    return _ENGINE
+
+
+def _rapid_once(path):
+    result = _rapid_engine()(path, return_word_box=True, return_single_char_box=True)
     if result.boxes is None:
         return []
     with Image.open(path) as image:
@@ -192,25 +226,332 @@ def _recognize_inner(path):
             raise RuntimeError("本机 OCR 不可用，请手工框选并逐页核对") from exc
 
 
-def recognize(path):
-    """同步识别入口，带超时保护（M2）。
+def prepare_backend():
+    """Initialize the OCR backend inside the worker process."""
+    try:
+        _rapid_engine()
+        return "rapidocr"
+    except ImportError:
+        from winrt.windows.graphics.imaging import BitmapDecoder  # noqa: F401
+        from winrt.windows.media.ocr import OcrEngine  # noqa: F401
+        from winrt.windows.storage import StorageFile  # noqa: F401
+        return "windows-ocr"
 
-    超时后不等待后台线程（daemon），直接按「本页识别失败」抛出 —— 由上游把该页置为
-    failed，用户在核对页人工确认或手工框选，而不是整批卡死。
-    """
-    box = {}
 
-    def _worker():
+class _JobBasicLimit(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_longlong),
+        ("PerJobUserTimeLimit", ctypes.c_longlong),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _JobIoCounters(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_ulonglong) for name in (
+        "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+        "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+
+class _JobExtendedLimit(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JobBasicLimit),
+        ("IoInfo", _JobIoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+class _WindowsKillJob:
+    """Kill assigned workers when the owning service process loses this handle."""
+
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    JobObjectExtendedLimitInformation = 9
+
+    def __init__(self):
+        self.handle = None
+        if os.name != "nt":
+            return
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+        kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p)
+        kernel32.SetInformationJobObject.restype = ctypes.c_int
+        kernel32.SetInformationJobObject.argtypes = (
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32)
+        kernel32.AssignProcessToJobObject.restype = ctypes.c_int
+        kernel32.AssignProcessToJobObject.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+        kernel32.CloseHandle.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            return
+        info = _JobExtendedLimit()
+        info.BasicLimitInformation.LimitFlags = self.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        ok = kernel32.SetInformationJobObject(
+            handle, self.JobObjectExtendedLimitInformation,
+            ctypes.byref(info), ctypes.sizeof(info))
+        if not ok:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+            return
+        self._kernel32 = kernel32
+        self.handle = handle
+
+    def assign(self, process):
+        if not self.handle or not getattr(process, "_handle", None):
+            return False
+        return bool(self._kernel32.AssignProcessToJobObject(
+            ctypes.c_void_p(self.handle), ctypes.c_void_p(process._handle)))
+
+    def close(self):
+        if self.handle:
+            self._kernel32.CloseHandle(ctypes.c_void_p(self.handle))
+            self.handle = None
+
+
+class OcrClient:
+    """Serialize OCR requests through one restartable worker process."""
+
+    def __init__(self, worker_cmd=None, start_timeout=OCR_START_TIMEOUT_SEC,
+                 max_response_bytes=OCR_MAX_RESPONSE_BYTES):
+        self.worker_cmd = worker_cmd
+        self.start_timeout = float(start_timeout)
+        self.max_response_bytes = int(max_response_bytes)
+        self._lock = threading.RLock()
+        self._process = None
+        self._messages = None
+        self._reader = None
+        self._next_id = 0
+        self._startup_failures = 0
+        self._disabled = False
+        self._stopped = False
+        self._job = _WindowsKillJob()
+        self._job_assigned = False
+
+    def _command(self):
+        if self.worker_cmd:
+            return list(self.worker_cmd)
+        return [sys.executable, str(Path(__file__).with_name("contract_pdf_ocr_worker.py"))]
+
+    @staticmethod
+    def _put(messages, item):
         try:
-            box["lines"] = _recognize_inner(path)
-        except BaseException as exc:          # noqa: BLE001 — 需把异常带回主线程
-            box["error"] = exc
+            messages.put_nowait(item)
+        except queue.Full:
+            pass
 
-    th = threading.Thread(target=_worker, daemon=True)
-    th.start()
-    th.join(OCR_TIMEOUT_SEC)
-    if th.is_alive():
-        raise RuntimeError("本机 OCR 超时（>%ds），请手工框选并逐页核对" % int(OCR_TIMEOUT_SEC))
-    if "error" in box:
-        raise box["error"]
-    return box.get("lines") or []
+    def _read_messages(self, process, messages):
+        stream = process.stdout
+        try:
+            while True:
+                raw = stream.readline(self.max_response_bytes + 1)
+                if not raw:
+                    self._put(messages, ("error", "worker-exited"))
+                    return
+                if len(raw) > self.max_response_bytes or not raw.endswith(b"\n"):
+                    self._put(messages, ("error", "response-too-large"))
+                    return
+                try:
+                    value = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self._put(messages, ("error", "invalid-json"))
+                    return
+                self._put(messages, ("message", value))
+        except (OSError, ValueError):
+            self._put(messages, ("error", "reader-failed"))
+
+    def _terminate_locked(self):
+        process = self._process
+        reader = self._reader
+        self._process = None
+        self._messages = None
+        self._reader = None
+        if process is None:
+            return
+        try:
+            if process.stdin:
+                process.stdin.close()
+        except OSError:
+            pass
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if reader and reader is not threading.current_thread():
+            reader.join(timeout=1)
+        for stream in (process.stdout, process.stderr):
+            try:
+                if stream:
+                    stream.close()
+            except OSError:
+                pass
+
+    def _startup_failed_locked(self, reason):
+        self._terminate_locked()
+        self._startup_failures += 1
+        if self._startup_failures >= 3:
+            self._disabled = True
+        if self._disabled:
+            raise OcrUnavailable("本机 OCR 连续启动失败，已停止自动识别，请手工框选")
+        raise OcrUnavailable("本机 OCR 启动失败，请手工框选（%s）" % reason)
+
+    def _wait_locked(self, timeout):
+        try:
+            kind, value = self._messages.get(timeout=max(0.01, timeout))
+        except queue.Empty as exc:
+            raise OcrTimeout("本机 OCR 超时，请手工框选并逐页核对") from exc
+        if kind == "error":
+            raise OcrProtocolError("本机 OCR 通信失败（%s）" % value)
+        if not isinstance(value, dict):
+            raise OcrProtocolError("本机 OCR 返回格式无效")
+        return value
+
+    def _start_locked(self):
+        if self._stopped or self._disabled:
+            raise OcrUnavailable("本机 OCR 当前不可用，请手工框选")
+        if self._process is not None and self._process.poll() is None:
+            return
+        self._terminate_locked()
+        messages = queue.Queue(maxsize=4)
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        env = dict(os.environ, PYTHONUTF8="1")
+        try:
+            process = subprocess.Popen(
+                self._command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, creationflags=flags, env=env, bufsize=0)
+        except OSError as exc:
+            self._startup_failed_locked(type(exc).__name__)
+        self._process = process
+        self._messages = messages
+        self._job_assigned = self._job.assign(process)
+        reader = threading.Thread(
+            target=self._read_messages, args=(process, messages),
+            name="pdf-ocr-reader", daemon=True)
+        self._reader = reader
+        reader.start()
+        try:
+            ready = self._wait_locked(self.start_timeout)
+        except OcrError as exc:
+            self._startup_failed_locked(type(exc).__name__)
+        if ready.get("ready") is not True:
+            self._startup_failed_locked(str(ready.get("error") or "not-ready")[:80])
+        self._startup_failures = 0
+
+    def prewarm(self):
+        with self._lock:
+            self._start_locked()
+
+    def recognize(self, path, timeout=OCR_TIMEOUT_SEC):
+        with self._lock:
+            self._start_locked()
+            self._next_id += 1
+            request_id = self._next_id
+            payload = json.dumps({"id": request_id, "path": os.fspath(path)},
+                                 ensure_ascii=False, separators=(",", ":")) + "\n"
+            try:
+                self._process.stdin.write(payload.encode("utf-8"))
+                self._process.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                self._terminate_locked()
+                raise OcrCrashed("本机 OCR 进程已退出，请重试本页") from exc
+            started = time.monotonic()
+            try:
+                response = self._wait_locked(float(timeout))
+            except OcrTimeout:
+                self._terminate_locked()
+                raise OcrTimeout("本机 OCR 超时（>%ds），请手工框选并逐页核对" % int(timeout))
+            except OcrError:
+                self._terminate_locked()
+                raise
+            if response.get("id") != request_id:
+                self._terminate_locked()
+                raise OcrProtocolError("本机 OCR 响应编号不匹配")
+            if time.monotonic() - started > float(timeout):
+                self._terminate_locked()
+                raise OcrTimeout("本机 OCR 超时，请手工框选并逐页核对")
+            if response.get("ok") is not True:
+                raise RuntimeError(str(response.get("error") or "本机 OCR 识别失败")[:240])
+            lines = response.get("lines")
+            if not isinstance(lines, list):
+                self._terminate_locked()
+                raise OcrProtocolError("本机 OCR 响应缺少识别结果")
+            return lines
+
+    def stop(self):
+        self._stopped = True
+        while True:
+            process = self._process
+            if process is not None and process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            if self._lock.acquire(timeout=0.1):
+                break
+        try:
+            self._terminate_locked()
+            self._job.close()
+        finally:
+            self._lock.release()
+
+
+_CLIENT = None
+_CLIENT_LOCK = threading.Lock()
+_PREWARM_THREAD = None
+
+
+def _client():
+    global _CLIENT
+    with _CLIENT_LOCK:
+        if _CLIENT is None:
+            _CLIENT = OcrClient()
+        return _CLIENT
+
+
+def recognize(path):
+    return _client().recognize(path)
+
+
+def prewarm_async():
+    global _CLIENT, _PREWARM_THREAD
+    with _CLIENT_LOCK:
+        if _PREWARM_THREAD and _PREWARM_THREAD.is_alive():
+            return _PREWARM_THREAD
+        if _CLIENT is None:
+            _CLIENT = OcrClient()
+        client = _CLIENT
+
+        def run():
+            try:
+                client.prewarm()
+            except OcrError as exc:
+                sys.stderr.write("[pdf-ocr] prewarm failed: %s\n" % type(exc).__name__)
+
+        _PREWARM_THREAD = threading.Thread(
+            target=run, name="pdf-ocr-prewarm", daemon=True)
+        _PREWARM_THREAD.start()
+        return _PREWARM_THREAD
+
+
+def stop():
+    global _CLIENT, _PREWARM_THREAD
+    with _CLIENT_LOCK:
+        client = _CLIENT
+        _CLIENT = None
+        _PREWARM_THREAD = None
+    if client is not None:
+        client.stop()
+
+
+atexit.register(stop)

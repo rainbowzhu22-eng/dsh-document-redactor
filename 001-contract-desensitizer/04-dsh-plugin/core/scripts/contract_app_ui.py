@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html as _html
 import json
+import re
 import urllib.parse
 from typing import Any, Dict
 
@@ -18,7 +19,7 @@ from contract_ui_notices import EXPORT_REVIEW_NOTICE, EXPORT_UNRECOGNIZED_NOTE
 
 APP_TITLE = "文书脱敏 / 还原"
 APP_SUBTITLE = "Legal Document Redactor"
-APP_VERSION = "1.3.0-dev"
+APP_VERSION = "1.3.0"
 
 esc = _html.escape
 
@@ -135,7 +136,7 @@ code{font-family:var(--fm);font-size:.86em;background:#f2f5fb;border:1px solid v
   -webkit-backdrop-filter:saturate(180%) blur(14px);
   border-bottom:1px solid rgba(226,231,241,.85)}
 .topbar-in{max-width:1260px;margin:0 auto;padding:11px 26px;display:flex;align-items:center;gap:16px}
-.brand{display:flex;align-items:center;gap:11px;color:var(--ink);text-decoration:none}
+.brand{display:flex;align-items:center;gap:11px;color:var(--ink);text-decoration:none;flex:0 0 auto}
 .brand:hover{text-decoration:none}
 .brand .mark{width:37px;height:37px;border-radius:12px;display:grid;place-items:center;flex:none;
   background:linear-gradient(135deg,#3b5bff,#7a4dff);box-shadow:0 7px 18px rgba(59,91,255,.30)}
@@ -143,8 +144,8 @@ code{font-family:var(--fm);font-size:.86em;background:#f2f5fb;border:1px solid v
 .brand-txt b{font-size:15px;font-weight:650;letter-spacing:-.015em}
 .brand-txt i{font-style:normal;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
 .topbar-mid{display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden}
-.topbar-act{margin-left:auto;display:flex;align-items:center;gap:9px}
-.live{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--sub);
+.topbar-act{margin-left:auto;display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end;min-width:0}
+.live{display:inline-flex;flex:none;align-items:center;gap:7px;white-space:nowrap;font-size:12px;color:var(--sub);
   background:#fff;border:1px solid var(--line);padding:5px 12px;border-radius:999px}
 .live .pulse{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(15,157,88,.5);
   animation:pulse 2.4s ease-out infinite}
@@ -316,6 +317,7 @@ h3{font-size:13px;font-weight:600;margin:0}
 .chip.on[data-sev=medium]{border-color:#f0dcae;background:#fffaef;color:#7d5607}
 .chip.on[data-sev=low]{border-color:#b6e2ef;background:#f1fbfe;color:#0a6a83}
 .chip.off{opacity:.42;background:var(--surface-2)}
+.chip.partial{border-style:dashed;opacity:.78}
 .chip.off .cnt{text-decoration:line-through}
 
 /* ------------------------------------------- 自选字段入口
@@ -459,7 +461,7 @@ mark.lowconf{background:#eef1f7;box-shadow:inset 0 -2px 0 #cfd8e6;border:1px das
 }
 @media(max-width:720px){
   .shell{padding:16px}
-  .topbar-in{padding:10px 16px}
+  .topbar-in{padding:10px 16px;flex-wrap:wrap;gap:8px}
   .modes{grid-template-columns:1fr}
   .hero{padding:24px}
   .hero h1{font-size:22px}
@@ -947,32 +949,7 @@ WORKSPACE_BODY = r"""
 
 __HINT__
 
-<div class="card">
-  <h2>请选择要执行的操作</h2>
-  <div class="modes" id="mode-picker">
-    <div class="mode __REDACT_ACTIVE__" data-mode="redact">
-      <div class="ic">🔒</div>
-      <div class="name">脱敏</div>
-      <div class="desc">识别敏感信息并生成可逆占位符；还原时需使用单独保存的JSON格式映射文件。</div>
-    </div>
-    <div class="mode __RESTORE_ACTIVE__" data-mode="restore">
-      <div class="ic">🔓</div>
-      <div class="name">还原</div>
-      <div class="desc">通过单独保存的映射文件，把脱敏稿里的占位符回填为原文。</div>
-    </div>
-  </div>
-</div>
-
-<div class="card" id="redact-panel" style="display:none">
-  <h2>脱敏设置</h2>
-  <div class="meta" style="margin-bottom:14px">
-    <span class="pill acc">共识别 __TYPE_COUNT__ 类 / __OCC_COUNT__ 处候选项</span>
-  </div>
-  <p class="stat" style="margin:0 0 16px">默认全部类型均已启用；在对比页可逐个类型、逐个位置取消，也可按严重度筛选。</p>
-  <a class="btn primary lg" href="/review?sid=__SID__">进入左右对比页 →</a>
-</div>
-
-<div class="card" id="restore-panel" style="display:none">
+<div class="card" id="restore-panel">
   <h2>还原</h2>
   __RESTORE_STATUS__
   <div id="restore-msg" class="result"></div>
@@ -987,17 +964,7 @@ __HINT__
 </div>
 
 <script>
-var SID='__SID__', FILE='__FILENAME__';
-function goMode(m){
-  Array.prototype.forEach.call(document.querySelectorAll('#mode-picker .mode'),function(el){
-    el.classList.toggle('active', el.getAttribute('data-mode')===m);
-  });
-  document.getElementById('redact-panel').style.display = m==='redact' ? '' : 'none';
-  document.getElementById('restore-panel').style.display = m==='restore' ? '' : 'none';
-}
-Array.prototype.forEach.call(document.querySelectorAll('#mode-picker .mode'),function(el){
-  el.addEventListener('click',function(){ goMode(el.getAttribute('data-mode')); });
-});
+var SID='__SID__', FILE='__FILENAME__', RESTORE_FROM_REVIEW=__RESTORE_FROM_REVIEW__;
 
 function okBox(url,name,extra){
   return '<div class="alert ok"><span class="i">✓</span><span>还原完成，共替换 '+extra+' 处。'+
@@ -1007,7 +974,9 @@ async function runRestore(){
   var out=document.getElementById('restore-msg');
   out.innerHTML='<div class="alert info"><span class="i">⏳</span><span>正在还原正文文字…</span></div>';
   try{
-    var r=await fetch('/api/restore/'+SID,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping:null})});
+    var restoreHeaders={'Content-Type':'application/json'};
+    if(RESTORE_FROM_REVIEW)restoreHeaders['X-Restore-Uploaded-Source']='1';
+    var r=await fetch('/api/restore/'+SID,{method:'POST',headers:restoreHeaders,body:JSON.stringify({mapping:null})});
     var j=await r.json();
     if(j.ok){
       var warn=(j.missing&&j.missing.length)?('<div class="alert warn" style="margin-top:10px"><span class="i">⚠</span><span>有 '+j.missing.length+' 个占位符未在文档中找到，可能已被手工修改。</span></div>'):'';
@@ -1024,18 +993,19 @@ async function uploadAndRestore(){
   out.innerHTML='<div class="alert info"><span class="i">⏳</span><span>正在上传映射并还原…</span></div>';
   try{
     var fd=new FormData(); fd.append('mapping',file);
-    var r=await fetch('/api/restore/'+SID,{method:'POST',body:fd});
+    var restoreHeaders={};
+    if(RESTORE_FROM_REVIEW)restoreHeaders['X-Restore-Uploaded-Source']='1';
+    var r=await fetch('/api/restore/'+SID,{method:'POST',body:fd,headers:restoreHeaders});
     var j=await r.json();
     if(j.ok){ out.innerHTML=okBox(j.output_url,j.output_name,j.applied); }
     else{ out.innerHTML='<div class="alert err"><span class="i">✗</span><span>还原失败：'+(j.error||'未知错误')+'</span></div>'; }
   }catch(e){ out.innerHTML='<div class="alert err"><span class="i">✗</span><span>请求失败：'+String(e)+'</span></div>'; }
 }
-goMode('__INIT_MODE__');
 </script>
 """
 
 
-def build_workspace_body(sid: str, info: Dict[str, Any]) -> bytes:
+def build_restore_landing_page(sid: str, info: Dict[str, Any]) -> bytes:
     name = esc(info.get("filename", ""))
     mode = info.get("mode")
     is_redacted = bool(info.get("looks_redacted") or info.get("is_redacted"))
@@ -1043,12 +1013,8 @@ def build_workspace_body(sid: str, info: Dict[str, Any]) -> bytes:
     has_embedded = bool(info.get("has_embedded_mapping")) or mapping == "embedded"
     counts = info.get("counts") or {"types": 0, "occurrences": 0}
 
-    if mode == "restore":
-        summary = "还原模式 · 已跳过识别"
-        head_title = "还原文书"
-    else:
-        summary = f"{counts.get('types', 0)} 类 / {counts.get('occurrences', 0)} 处候选项"
-        head_title = "选择操作"
+    summary = "还原模式 · 已跳过识别"
+    head_title = "还原文书"
 
     hint = ""
     if is_redacted:
@@ -1074,8 +1040,6 @@ def build_workspace_body(sid: str, info: Dict[str, Any]) -> bytes:
                           '✓ 使用已找到的映射执行还原</button>')
         manual_hide = ";display:none"
 
-    init_mode = "restore" if mode == "restore" else "redact"
-
     body = (WORKSPACE_BODY
             .replace("__HEAD_TITLE__", head_title)
             .replace("__FILENAME__", name)
@@ -1087,11 +1051,13 @@ def build_workspace_body(sid: str, info: Dict[str, Any]) -> bytes:
             .replace("__RESTORE_STATUS__", restore_status)
             .replace("__RESTORE_ACTION__", restore_action)
             .replace("__MANUAL_HIDE__", manual_hide)
-            .replace("__REDACT_ACTIVE__", "active" if init_mode == "redact" else "")
-            .replace("__RESTORE_ACTIVE__", "active" if init_mode == "restore" else "")
-            .replace("__INIT_MODE__", init_mode))
-    return html_doc("选择操作 · " + info.get("filename", ""), body,
+            .replace("__RESTORE_FROM_REVIEW__", "true" if info.get("_restore_from_review") else "false"))
+    return html_doc("还原文书 · " + info.get("filename", ""), body,
                     mid='<span class="pill">' + name + '</span>')
+
+
+def build_workspace_body(sid: str, info: Dict[str, Any]) -> bytes:
+    return build_restore_landing_page(sid, info)
 
 
 # =============================================================== 对比页 =======
@@ -1108,12 +1074,21 @@ REVIEW_BODY = r"""
   </div>
 </div>
 
-<div class="alert info" style="margin-bottom:14px"><span class="i">ℹ️</span><div><div style="margin-bottom:8px">__REVIEW_CONTEXT__</div><div style="font-size:13px;font-weight:400;line-height:1.65">使用说明：<br>①识别到的敏感信息默认勾选；低置信候选由您判断是否脱敏，勾选即可。<br>②可取消某类字段、点击原文高亮取消单处，也可手动补录漏识别字段。<br>③含批注或修订时按页面选项处理。</div><div class="notice-primary">__EXPORT_REVIEW_NOTICE__</div><small class="notice-secondary">__EXPORT_UNRECOGNIZED_NOTE__</small></div></div>
-__LANGUAGE_NOTICE__
-__REVISION_NOTICE__
-__IMAGE_WARNING__
-__OBJECT_WARNING__
-__PARSE_WARNINGS__
+__LOOKS_REDACTED_NOTICE__
+<style>
+.review-help summary,.review-help-body{font-size:14px;color:#111}
+.review-help summary{cursor:pointer;font-size:15px;color:#111;background:#fff4cc;border:1px solid #d6aa37;border-radius:4px;padding:4px 8px}
+.review-help-body{padding:8px 2px}
+.review-help-body p{margin:0 0 8px}
+.parse-notices{display:none;margin:12px 0;padding:10px 12px;border:1px solid #d8dee5;border-radius:6px;background:#f8fafc;color:#17212b}
+.parse-notice-details>summary{font-size:13px;color:#111;cursor:pointer}
+.parse-notice-body{margin-top:7px}
+.parse-notice{font-size:13px;margin-top:5px;padding:6px 8px;border-left:3px solid #cfd4da;background:transparent;color:#111}
+.parse-notice.error{border-left-color:#cfd4da;background:transparent;color:#111}
+</style>
+<details class="review-help" style="margin:0 0 14px"><summary>点击展开使用说明</summary><div class="review-help-body">__REVIEW_HELP__</div></details>
+<div class="notice-primary" style="margin-bottom:3px">__EXPORT_REVIEW_NOTICE__</div><small class="notice-secondary" style="margin-bottom:14px">__EXPORT_UNRECOGNIZED_NOTE__</small>
+<div id="parseNotices" class="parse-notices" role="status" aria-live="polite"></div>
 
 <div class="card" id="commentRevisionSettings" style="display:none;margin:14px 0">
   <h2 style="margin:0 0 12px">批注与修订</h2>
@@ -1127,12 +1102,11 @@ __PARSE_WARNINGS__
       </select>
       <span class="stat" id="commentSummary"></span>
     </div>
-    <div class="stat" style="margin-top:8px"><b>工具只能按既有规则识别批注中的敏感信息，不能判断批注意见本身是否属于内部秘密，请人工核对。</b></div>
     <div class="stat" id="commentModeHint" style="margin-top:5px"></div>
   </div>
   <div id="revisionSettings" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft)">
     <div class="field" style="margin:0"><b>修订处理</b>：受支持的修订默认保留并脱敏，修订痕迹仍会显示。</div>
-    <div class="stat" id="revisionModeHint" style="margin-top:5px"></div>
+    <div class="stat" id="revisionModeHint" style="margin-top:5px">受支持的修订默认保留并脱敏；修订痕迹仍会显示。</div>
   </div>
   <div id="externalRelationshipSettings" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft)">
     <label for="externalRelationshipAction"><b>外部链接</b></label>
@@ -1140,7 +1114,7 @@ __PARSE_WARNINGS__
       <option value="remove">外发时移除链接关系，保留可见文字</option>
       <option value="preserve">保留外部链接</option>
     </select>
-    <div class="alert warn" id="externalRelationshipHint" style="margin:8px 0 0"></div>
+    <div class="stat" id="externalRelationshipHint" style="margin:8px 0 0"></div>
   </div>
   <div id="externalTargetReview" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft)">
     <b>超链接目标中的敏感候选</b>
@@ -1213,12 +1187,12 @@ __PARSE_WARNINGS__
   </div>
   <div class="out-row">
     <label class="chk locked" title="脱敏文件为必选项"><input type="checkbox" id="optDoc" checked disabled><span>脱敏文件 <b>*.__OUTPUT_EXT__</b></span></label>
-    <label class="chk" id="jsonWrap" title="默认未勾选；勾选后仅在脱敏成功时下载JSON格式的映射文件。请单独保管，勿随脱敏稿外发。"><input type="checkbox" id="optJson"><span>下载JSON格式的映射文件（*.mapping.json）</span></label>
+    <label class="chk" id="jsonWrap" title="映射文件含可还原的原文，默认不下载；下载前会再次要求确认。"><input type="checkbox" id="optJson"><span>下载JSON格式的映射文件（*.mapping.json）</span></label>
     <button type="button" class="btn sm ghost" id="pickDir" title="选择一个文件夹后，将所勾选的文件保存进去">选择保存文件夹…</button>
     <span class="folder" id="dirState">未选文件夹 → 按浏览器下载设置保存</span>
   </div>
   <div class="stat" style="margin-top:7px">浏览器可能询问保存位置；否则按您在浏览器中设置的下载位置保存。输出文件名沿用源文件名，请检查文件名并在含敏感信息时自行修改。</div>
-  <div class="stat" id="mappingSaveHelp" style="margin-top:7px">JSON格式的映射文件（*.mapping.json）仅在脱敏成功后生成，含原文且不嵌入脱敏DOCX。默认未勾选。勾选上方选项后，文件会在脱敏成功后下载；已授权保存文件夹时写入该文件夹，否则按浏览器下载设置保存。未勾选时，请在成功结果区点击“另存JSON格式的映射文件”；手动另存按浏览器下载设置保存。导出失败时不会显示本次文件的另存入口。映射文件请单独保管，不要随脱敏文档外发。</div>
+  <div class="stat" id="mappingSaveHelp" style="margin-top:7px">JSON格式的映射文件（*.mapping.json）仅在有替换记录且脱敏成功后生成，含原文且不嵌入脱敏DOCX。默认不下载；勾选后会在下载前再次确认，拒绝确认不影响脱敏文书保存。成功结果区和历史页的另存入口也会要求确认。导出失败时不会显示本次文件的另存入口。映射文件请单独保管，不要随脱敏文档外发。</div>
   <div id="result" class="result"></div>
 </div>
 
@@ -1229,6 +1203,7 @@ var EXPORT_UNRECOGNIZED_NOTE = __EXPORT_UNRECOGNIZED_NOTE_JSON__;
 var enabled = new Set(DATA.types.filter(function(t){return t.default_enabled!==false;}).map(function(t){return t.id;}));
 var commentMode = DATA.comment_mode_default || 'redact_preserve';
 var revisionInventory = DATA.revision_inventory || {};
+var staticParseNotices = DATA.parse_notices || [];
 var unsupportedRevisions = revisionInventory.unsupported_manifest || [];
 var passthroughUnverified = !!revisionInventory.passthrough_safe && !revisionInventory.complete;
 var unsafeFieldCount = Number(revisionInventory.unsafe_field_instruction_count || 0);
@@ -1248,24 +1223,54 @@ var externalRelationshipCount = Number(revisionInventory.external_relationship_c
 var externalTargets = DATA.external_targets || [];
 var externalRelationshipAction = 'remove';
 var settingsWrap = document.getElementById('commentRevisionSettings');
+function renderParseNotices(){
+  var box=document.getElementById('parseNotices');
+  var previous=box.querySelector('details.parse-notice-details');
+  var wasOpen=previous?previous.open:false;
+  var notices=staticParseNotices.slice();
+  if(DATA.comments&&DATA.comments.has_comments){
+    var unsupportedComments=DATA.comments.unsupported||[];
+    if(commentMode==='preserve_unredacted'){
+      notices.push({severity:'warn',text:'批注将原样保留且不进行脱敏，请人工核对批注内的敏感信息。'});
+    }else if(commentMode==='redact_preserve'&&unsupportedComments.length){
+      notices.push({severity:'warn',text:'批注中有'+unsupportedComments.length+'项无法安全脱敏的结构，相关内容将按原样保留。'});
+    }
+  }
+  if(externalRelationshipAction==='preserve'&&externalRelationshipCount){
+    notices.push({severity:'warn',text:'保留外部链接时只检查链接显示文字和目标网址中的可识别内容；不会检查远端网页、其他关系目标及Word字段指令中的网址。'});
+    if(revisionInventory.external_target_unscanned_count){
+      notices.push({severity:'warn',text:'另有'+Number(revisionInventory.external_target_unscanned_count)+'个外部关系目标无法检查。'});
+    }
+  }
+  var unique=[],seen=new Set();
+  notices.forEach(function(item){
+    var text=String(item.text||'').trim();
+    if(!text||seen.has(text))return;
+    seen.add(text);unique.push({severity:item.severity==='error'?'error':'warn',text:text});
+  });
+  box.replaceChildren();
+  if(!unique.length){box.style.display='none';return;}
+  var details=document.createElement('details');details.className='parse-notice-details';details.open=wasOpen;
+  var title=document.createElement('summary');title.textContent='无法安全脱敏的内容（点击查看详情）';details.appendChild(title);
+  var body=document.createElement('div');body.className='parse-notice-body';
+  unique.forEach(function(item){var row=document.createElement('div');row.className='parse-notice'+(item.severity==='error'?' error':'');row.textContent=item.text;body.appendChild(row);});
+  details.appendChild(body);box.appendChild(details);
+  box.style.display='block';
+}
 if(DATA.comments && DATA.comments.has_comments){
   settingsWrap.style.display='block';
   document.getElementById('commentSettings').style.display='block';
   document.getElementById('commentMode').value=commentMode;
   document.getElementById('commentSummary').textContent=DATA.comments.unsupported&&DATA.comments.unsupported.length?
-    '存在批注相关部件，发现 '+DATA.comments.unsupported.length+' 项无法安全脱敏结构':
+    '批注 '+DATA.comments.count+' 条，相关结构信息见“无法安全脱敏的内容”':
     '批注 '+DATA.comments.count+' 条，段落 '+DATA.comments.paragraph_count+' 段，插入人 '+DATA.comments.author_count+' 位，候选 '+DATA.comments.candidate_count+' 处';
   function updateCommentMode(){
     commentMode=document.getElementById('commentMode').value;
-    var remove=commentMode==='remove_all';
     var preserveRaw=commentMode==='preserve_unredacted';
-    var unsupported=DATA.comments.unsupported&&DATA.comments.unsupported.length>0;
-    document.getElementById('commentModeHint').textContent=remove?
-      '导出时将删除批注正文、批注人和锚点；mapping不能恢复已删除的批注结构。':
-      (preserveRaw?(unsupported?
-       '批注将原样保留，不会脱敏；当前无法识别并脱敏批注内容，请人工核对批注内的敏感信息。':
-       '批注将原样保留，不会脱敏；请人工核对批注内的敏感信息。'):
-       '批注正文和批注人中勾选的内容会写入mapping供还原；mapping含原文，请单独保管。');
+    document.getElementById('commentModeHint').textContent=preserveRaw?
+      '批注将原样保留且不进行脱敏；风险提示见上方“无法安全脱敏的内容”。':
+      (commentMode==='remove_all'?'导出时移除批注正文、批注人和锚点。':'批注中勾选的内容会写入映射文件供还原，请单独保管映射文件。');
+    renderParseNotices();
   }
   document.getElementById('commentMode').addEventListener('change',function(){ updateCommentMode(); render(); });
   updateCommentMode();
@@ -1273,14 +1278,12 @@ if(DATA.comments && DATA.comments.has_comments){
 if(hasSupportedRevisions || hasUnsupportedRevisions){
   settingsWrap.style.display='block';
   document.getElementById('revisionSettings').style.display='block';
-  var revisionHint=document.getElementById('revisionModeHint');
   if(passthroughUnverified){
-    revisionHint.textContent=DATA.revision_warning||
-      '修订盘点未完整完成；可以继续导出，无法确认的内容将按原样保留。';
+    document.getElementById('revisionModeHint').textContent='盘点结果会在上方“无法安全脱敏的内容”中列出。';
   }else if(hasSupportedRevisions){
-    revisionHint.textContent='已选择保留并脱敏受支持的修订；如需不带修订痕迹的版本，请先在Word中处理后重新上传。';
+    document.getElementById('revisionModeHint').textContent='如需不带修订痕迹的版本，请先在Word中处理后重新上传。';
   }else{
-    revisionHint.textContent=DATA.revision_warning||'未支持的修订内容将按原样保留。';
+    document.getElementById('revisionModeHint').textContent='相关限制会在上方“无法安全脱敏的内容”中列出。';
   }
 }
 if(externalRelationshipCount){
@@ -1288,12 +1291,12 @@ if(externalRelationshipCount){
   var externalWrap=document.getElementById('externalRelationshipSettings');
   var externalSelect=document.getElementById('externalRelationshipAction');
   externalWrap.style.display='block';
-  document.getElementById('externalRelationshipHint').textContent=
-    '检测到外部超链接或资源关系。默认移除外部关系并保留超链接显示文字。如选择保留，工具会扫描超链接显示文字和目标网址中符合规则的敏感信息并提供候选；不会扫描链接打开后的远端网页内容、其他关系目标及Word字段指令中的网址。外链图片或对象可能不再显示。';
+  document.getElementById('externalRelationshipHint').textContent='选择处理方式后，相关范围提示显示在上方“无法安全脱敏的内容”中。外链图片或对象可能不再显示。';
   function updateExternalRelationshipAction(){
     externalRelationshipAction=externalSelect.value;
     document.getElementById('externalTargetReview').style.display=
       externalRelationshipAction==='preserve'&&externalTargets.length?'block':'none';
+    renderParseNotices();
   }
   externalRelationshipAction=externalSelect.value;
   externalSelect.addEventListener('change',function(){
@@ -1302,19 +1305,50 @@ if(externalRelationshipCount){
   });
   updateExternalRelationshipAction();
 }
+renderParseNotices();
 if(!DATA.case_name){
   document.getElementById('termScope').value='document';
   document.getElementById('termScope').disabled=true;
 }
 var sev = 'all';
 var itemEnabled = new Map();
+var itemOverrides = new Map();
 // v1.3.0「低置信可见可勾」：分数低于门槛的候选机器没把握 —— 复核页里可见，但默认不勾。
 // 注意：这是「不确定性」，与「金额/日期被故意跳过」（策略性排除）语义不同，须分开呈现。
 var LOWCUT = (typeof DATA.min_confidence==='number') ? DATA.min_confidence : 0.5;
 var lowExpanded = false;                       // 低置信列表默认折叠
 function isLow(m){ return typeof m.conf==='number' && m.conf < LOWCUT; }
-DATA.blocks.forEach(function(b,bi){ (b.marks||[]).forEach(function(m,mi){ itemEnabled.set(bi+':'+mi, !isLow(m)&&!m.rewrite_blocked); }); });
-externalTargets.forEach(function(m,i){ itemEnabled.set('external:'+i, !isLow(m)); });
+DATA.blocks.forEach(function(b,bi){ (b.marks||[]).forEach(function(m,mi){ itemEnabled.set(bi+':'+mi, enabled.has(m.t)&&!isLow(m)&&!m.rewrite_blocked); }); });
+externalTargets.forEach(function(m,i){ itemEnabled.set('external:'+i, enabled.has(m.type)&&!isLow(m)); });
+
+function itemDefaultEnabled(m,type){ return enabled.has(type)&&!isLow(m)&&!m.rewrite_blocked; }
+function setItemOverride(key,on){ itemOverrides.set(key,!!on); itemEnabled.set(key,!!on); }
+function setTypeItems(type,on){
+  DATA.blocks.forEach(function(b,bi){ (b.marks||[]).forEach(function(m,mi){
+    if(m.t!==type)return;
+    var key=bi+':'+mi;
+    if(on){itemOverrides.delete(key);itemEnabled.set(key,itemDefaultEnabled(m,type));}
+    else if(itemOverrides.get(key)===true){itemEnabled.set(key,true);}
+    else{itemOverrides.delete(key);itemEnabled.set(key,false);}
+  }); });
+  externalTargets.forEach(function(m,i){
+    if(m.type!==type)return;
+    var key='external:'+i;
+    if(on){itemOverrides.delete(key);itemEnabled.set(key,itemDefaultEnabled(m,type));}
+    else if(itemOverrides.get(key)===true){itemEnabled.set(key,true);}
+    else{itemOverrides.delete(key);itemEnabled.set(key,false);}
+  });
+}
+function resetItemStates(){
+  itemOverrides.clear();
+  DATA.blocks.forEach(function(b,bi){ (b.marks||[]).forEach(function(m,mi){ itemEnabled.set(bi+':'+mi,itemDefaultEnabled(m,m.t)); }); });
+  externalTargets.forEach(function(m,i){ itemEnabled.set('external:'+i,itemDefaultEnabled(m,m.type)); });
+}
+function clearItemStates(){
+  itemOverrides.clear();
+  DATA.blocks.forEach(function(b,bi){ (b.marks||[]).forEach(function(m,mi){ itemEnabled.set(bi+':'+mi,false); }); });
+  externalTargets.forEach(function(m,i){itemEnabled.set('external:'+i,false);});
+}
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 
@@ -1361,14 +1395,22 @@ function renderTypes(){
     var wrap=document.createElement('div'); wrap.className='chips';
     list.slice().sort(function(a,b){ return rank[a.sev]-rank[b.sev]; }).forEach(function(t){
       var on = enabled.has(t.id);
+      var hasException=!on&&Array.from(itemEnabled.entries()).some(function(entry){
+        if(!entry[1])return false;
+        var key=entry[0];
+        if(key.indexOf('external:')===0){var ext=externalTargets[Number(key.slice(9))];return ext&&ext.type===t.id;}
+        var parts=key.split(':');var mark=(DATA.blocks[Number(parts[0])].marks||[])[Number(parts[1])];return mark&&mark.t===t.id;
+      });
       var c=document.createElement('label');
-      c.className='chip'+(on?' on':' off');
+      c.className='chip'+(on?' on':' off')+(hasException?' partial':'');
+      c.title=hasException?'类型默认关闭，仍有单处恢复':'按类型默认处理';
       c.setAttribute('data-sev',t.sev);
       c.innerHTML='<input type="checkbox" '+(on?'checked':'')+'>'+
         '<span class="dot" style="background:'+({high:'#e5484d',medium:'#dd9207',low:'#0d9bc0'}[t.sev]||'#94a3b8')+'"></span>'+
         esc(t.label)+' <span class="cnt">'+t.count+'</span>';
       c.querySelector('input').addEventListener('change',function(ev){
         if(ev.target.checked) enabled.add(t.id); else enabled.delete(t.id);
+        setTypeItems(t.id,ev.target.checked);
         render();
       });
       wrap.appendChild(c);
@@ -1389,9 +1431,8 @@ function renderExternalTargets(){
   externalTargets.forEach(function(m,i){
     var row=document.createElement('label');row.className='field';
     var cb=document.createElement('input');cb.type='checkbox';
-    cb.checked=enabled.has(m.type)&&!!itemEnabled.get('external:'+i);
-    cb.disabled=!enabled.has(m.type);
-    cb.addEventListener('change',function(){itemEnabled.set('external:'+i,cb.checked);render();});
+    cb.checked=!!itemEnabled.get('external:'+i);
+    cb.addEventListener('change',function(){setItemOverride('external:'+i,cb.checked);render();});
     var text=document.createElement('span');
     text.textContent=m.label+'：'+m.display_text+' → '+m.placeholder+
       (isLow(m)?'（把握较低，默认未勾选）':'');
@@ -1430,7 +1471,7 @@ function render(){
         var blockedReason=m.rewrite_block_reason||'该处文字无法安全定位，不能选择脱敏';
         L+='<span class="off" title="'+esc(blockedReason)+'">'+esc(b.text.slice(ls,le))+'</span>';
         R+=esc(b.text.slice(ls,le));
-      }else if(enabled.has(m.t)&&itemEnabled.get(bi+':'+mi)&&!rawComment){
+      }else if(itemEnabled.get(bi+':'+mi)&&!rawComment){
         n++;
         L+='<mark class="'+m.sev+(low?' lowconf':'')+'" data-bk="'+bi+'" data-mi="'+mi+'" title="点击取消该处'+(low?'（把握较低）':'')+'">'+esc(b.text.slice(ls,le))+'</mark>';
         R+='<mark class="ph sev-'+m.sev+'" title="'+esc(m.label)+'">'+esc(m.placeholder||m.masked)+'</mark>';
@@ -1454,12 +1495,12 @@ function render(){
   }
   Array.prototype.forEach.call(document.querySelectorAll('mark[data-bk]'),function(el){
     el.addEventListener('click',function(){
-      itemEnabled.set(el.getAttribute('data-bk')+':'+el.getAttribute('data-mi'),false); render();
+      setItemOverride(el.getAttribute('data-bk')+':'+el.getAttribute('data-mi'),false); render();
     });
   });
   Array.prototype.forEach.call(document.querySelectorAll('span.off[data-bk]'),function(el){
     el.addEventListener('click',function(){
-      itemEnabled.set(el.getAttribute('data-bk')+':'+el.getAttribute('data-mi'),true); render();
+      setItemOverride(el.getAttribute('data-bk')+':'+el.getAttribute('data-mi'),true); render();
     });
   });
   document.getElementById('stat').innerHTML='将替换 <b>'+n+'</b> 处 · 生效类型 <b>'+enabled.size+'</b> 类';
@@ -1471,7 +1512,8 @@ function lowGroups(){
   var groups={};
   DATA.blocks.forEach(function(b,bi){
     (b.marks||[]).forEach(function(m,mi){
-      if(!enabled.has(m.t)||!isLow(m)||m.rewrite_blocked) return;
+      var key=bi+':'+mi;
+      if((!enabled.has(m.t)&&!itemEnabled.get(key))||!isLow(m)||m.rewrite_blocked) return;
       var key=m.t+'|'+(m.placeholder||m.masked||'');
       var g=groups[key]||(groups[key]={t:m.t,sev:m.sev,label:m.label,
         ph:m.placeholder||m.masked||'',conf:m.conf,items:[],reviewReasons:[]});
@@ -1479,12 +1521,12 @@ function lowGroups(){
       (m.review_reasons||[]).forEach(function(reason){
         if(g.reviewReasons.indexOf(reason)<0) g.reviewReasons.push(reason);
       });
-      g.items.push({bi:bi,mi:mi,key:bi+':'+mi,loc:b.loc||('段落 '+(bi+1)),
+      g.items.push({bi:bi,mi:mi,key:key,loc:b.loc||('段落 '+(bi+1)),
         text:b.text.slice(m.s-b.start,m.e-b.start)});
     });
   });
   externalTargets.forEach(function(m,i){
-    if(!enabled.has(m.type)||!isLow(m)) return;
+    if((!enabled.has(m.type)&&!itemEnabled.get('external:'+i))||!isLow(m)) return;
     var key=m.type+'|'+(m.placeholder||'');
     var g=groups[key]||(groups[key]={t:m.type,sev:'low',label:m.label,
       ph:m.placeholder||'',conf:m.confidence,items:[],reviewReasons:[]});
@@ -1496,11 +1538,11 @@ function lowCheckedCount(){
   var n=0;
   DATA.blocks.forEach(function(b,bi){
     (b.marks||[]).forEach(function(m,mi){
-      if(enabled.has(m.t)&&isLow(m)&&!m.rewrite_blocked&&itemEnabled.get(bi+':'+mi)) n++;
+      if(isLow(m)&&!m.rewrite_blocked&&itemEnabled.get(bi+':'+mi)) n++;
     });
   });
   externalTargets.forEach(function(m,i){
-    if(enabled.has(m.type)&&isLow(m)&&itemEnabled.get('external:'+i)) n++;
+    if(isLow(m)&&itemEnabled.get('external:'+i)) n++;
   });
   return n;
 }
@@ -1531,7 +1573,7 @@ function renderLow(){
     var lab=document.createElement('label'); lab.className='chk'; lab.style.flex='none';
     var cb=document.createElement('input'); cb.type='checkbox'; cb.checked=anyOn;
     cb.addEventListener('change',function(){
-      g.items.forEach(function(it){ itemEnabled.set(it.key||it.bi+':'+it.mi, cb.checked); });
+      g.items.forEach(function(it){ setItemOverride(it.key||it.bi+':'+it.mi, cb.checked); });
       render();
     });
     lab.appendChild(cb); lab.appendChild(document.createTextNode('脱敏'));
@@ -1587,18 +1629,19 @@ Array.prototype.forEach.call(document.querySelectorAll('.jsJumpTerms'),function(
   b.addEventListener('click',jumpToTerms);
 });
 document.getElementById('selAll').addEventListener('click',function(){
-  enabled=new Set(DATA.types.map(function(t){return t.id;})); render();
+  enabled=new Set(DATA.types.map(function(t){return t.id;}));
+  resetItemStates(); render();
 });
 document.getElementById('selNone').addEventListener('click',function(){
-  enabled=new Set(); render();
+  enabled=new Set();
+  clearItemStates(); render();
 });
 document.getElementById('resetMarks').addEventListener('click',function(){
-  DATA.blocks.forEach(function(b,bi){ (b.marks||[]).forEach(function(m,mi){ itemEnabled.set(bi+':'+mi,!m.rewrite_blocked); }); });
-  render();
+  resetItemStates(); render();
 });
 
 // ============================================================ 输出保存 =======
-// 脱敏文书始终下载；JSON格式的映射文件仅在脱敏成功后生成，默认不自动下载。
+// 脱敏文书始终下载；mapping含可还原原文，默认关闭并在每次下载前确认。
 // 手段：① 用户若选过文件夹 → 用 File System Access API 直接写入该文件夹
 //          （127.0.0.1 属安全上下文，Chrome/Edge 可用；不再弹下载框）
 //       ② 否则 → 按浏览器设置触发所选文件的下载（兜底，任何浏览器都可）
@@ -1616,7 +1659,7 @@ if(!FSA_OK){
 pickBtn.addEventListener('click', async function(){
   if(!FSA_OK) return;
   try{
-    var h = await window.showDirectoryPicker({id:'contract-redactor-out', mode:'readwrite', startIn:'downloads'});
+    var h = await window.showDirectoryPicker({id:'contract-redactor-output-v2', mode:'readwrite', startIn:'downloads'});
     if(await h.queryPermission({mode:'readwrite'}) !== 'granted'){
       if(await h.requestPermission({mode:'readwrite'}) !== 'granted') return;
     }
@@ -1624,7 +1667,14 @@ pickBtn.addEventListener('click', async function(){
     dirStateEl.className = 'folder on';
     dirStateEl.innerHTML = '已选择文件夹：<code>' + esc(h.name) + '</code>（仅保存所勾选的文件）';
     pickBtn.textContent = '更换文件夹…';
-  }catch(e){ /* 用户取消选择，保持原状 */ }
+  }catch(e){
+    if(e&&e.name==='AbortError') return;
+    dirHandle=null;
+    dirStateEl.className='folder';
+    dirStateEl.textContent=(e&&(e.name==='NotAllowedError'||e.name==='SecurityError'))
+      ? '浏览器拒绝访问此文件夹（可能包含系统文件或受系统保护）。请选择“下载”或“桌面”等普通文件夹；也可取消选择，文件将按浏览器下载设置保存。'
+      : '无法选择保存文件夹，将按浏览器下载设置保存。';
+  }
 });
 
 function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
@@ -1648,11 +1698,21 @@ async function writeToFolder(url, name){
   return blob.size;
 }
 
-// 自动保存脱敏文书；mapping仅在用户主动勾选后自动保存。
+function confirmMappingDownload(event){
+  var accepted=window.confirm('映射文件包含可还原的原文，请与原件同等保管，不要随脱敏稿外发。确认下载？');
+  if(!accepted && event){event.preventDefault();event.stopPropagation();}
+  return accepted;
+}
+
+// 自动保存脱敏文书；mapping仅在用户勾选并再次确认后保存。
 async function saveOutputs(j){
   var jobs = [{url:j.output_url, name:j.output_name}];
   if(document.getElementById('optJson').checked && j.mapping_url){
-    jobs.push({url:j.mapping_url, name:j.mapping_name || 'mapping.json'});
+    if(confirmMappingDownload()){
+      jobs.push({url:j.mapping_url, name:j.mapping_name || 'mapping.json'});
+    }else{
+      document.getElementById('optJson').checked=false;
+    }
   }
 
   if(dirHandle){
@@ -1735,12 +1795,12 @@ function collectItems(){
     if(commentMode==='preserve_unredacted'&&String(b.kind||'').indexOf('comment_')===0) return;
     (b.marks||[]).forEach(function(m,mi){
       // 用绝对偏移（m.s/m.e）而不是实体内部序号：序号每个实体都从 0 重来，会串号
-      if(enabled.has(m.t)&&itemEnabled.get(bi+':'+mi)){ items.push({type:m.t,offset:[m.s,m.e]}); }
+      if(itemEnabled.get(bi+':'+mi)){ items.push({type:m.t,offset:[m.s,m.e]}); }
     });
   });
   if(externalRelationshipAction==='preserve'){
     externalTargets.forEach(function(m,i){
-      if(enabled.has(m.type)&&itemEnabled.get('external:'+i)){
+      if(itemEnabled.get('external:'+i)){
         items.push({type:m.type,offset:m.offset});
       }
     });
@@ -1763,7 +1823,7 @@ function buildManifest(items){
     DATA.blocks.forEach(function(b,bi){
       if(String(b.kind||'').indexOf('comment_')!==0) return;
       (b.marks||[]).forEach(function(m,mi){
-        var selected=enabled.has(m.t)&&itemEnabled.get(bi+':'+mi);
+        var selected=itemEnabled.get(bi+':'+mi);
         if(selected) selectedComments++;
         else if(isLow(m)) uncheckedLowComments++;
       });
@@ -1777,7 +1837,7 @@ function buildManifest(items){
   var hasUncheckedLowConfidence=false;
   DATA.blocks.forEach(function(b,bi){
     (b.marks||[]).forEach(function(m,mi){
-      if(!enabled.has(m.t)||!isLow(m)) return;
+      if((!enabled.has(m.t)&&!itemEnabled.get(bi+':'+mi))||!isLow(m)) return;
       if(!itemEnabled.get(bi+':'+mi)) hasUncheckedLowConfidence=true;
     });
   });
@@ -1786,7 +1846,17 @@ function buildManifest(items){
   }
   var offTypes=DATA.types.filter(function(t){ return !enabled.has(t.id); });
   if(offTypes.length){
-    soft.push('已按您的选择保留 '+offTypes.length+' 类字段原文。');
+    var keptByType=0, restoredByType=0;
+    offTypes.forEach(function(t){
+      DATA.blocks.forEach(function(b,bi){
+        if(commentMode==='preserve_unredacted'&&String(b.kind||'').indexOf('comment_')===0)return;
+        (b.marks||[]).forEach(function(m,mi){if(m.t===t.id){if(itemEnabled.get(bi+':'+mi))restoredByType++;else keptByType++;}});
+      });
+      if(externalRelationshipAction==='preserve')externalTargets.forEach(function(m,i){
+        if(m.type===t.id){if(itemEnabled.get('external:'+i))restoredByType++;else keptByType++;}
+      });
+    });
+    soft.push('已关闭 '+offTypes.length+' 类字段默认处理：按类型保留 '+keptByType+' 处；其中单处恢复处理 '+restoredByType+' 处。');
   }
   return {red:red, soft:soft};
 }
@@ -1890,7 +1960,7 @@ async function runApply(items, confirmed, snapshot, softNotes){
         renderSaved(sv,j)+
         '<div style="margin-top:9px">'+
           '<a class="btn ok sm" href="'+j.output_url+'" download>另存 '+esc(j.output_name)+'</a>'+
-          (j.mapping_url?('<a class="btn sm" style="margin-left:8px" href="'+j.mapping_url+'" download>另存JSON格式的映射文件</a>'):'')+
+          (j.mapping_url?('<a class="btn sm" style="margin-left:8px" href="'+j.mapping_url+'" download onclick="return confirmMappingDownload(event)">另存JSON格式的映射文件</a>'):'')+
         '</div>'+
         renderSavedWarnings(postNotes.join('；'))+
         renderSkippedDetails(j.skipped_details)+
@@ -1924,80 +1994,130 @@ def build_review_page(sid: str, info: Dict[str, Any]) -> bytes:
     types_n = len(payload.get("types") or [])
     occ_n = (report.get("summary") or {}).get("occurrences", 0)
     name = info.get("filename", "")
-    scene = ("当前用途：合同、诉讼及其他文书统一脱敏；诉讼案号、法院名称与公文/机构编号均作为候选，"
-             "由您在对照页逐项选择。DOCX批注默认保留并脱敏，受支持修订默认保留并脱敏。")
-    preflight = ((payload.get("revision_inventory") or {}).get("compat_preview") or [])
-    if preflight:
-        compatible = sum(row.get("verdict") == "supported" for row in preflight)
-        blocked = sum(row.get("verdict") == "blocked" for row in preflight)
-        scene += " 上传预检：%d处普通文字/页码控件可兼容，%d处控件仍需处理；最终导出按当前选择重新验证。" % (compatible, blocked)
-    policy_description = payload.get("policy_description") or ""
-    policy_count = int(payload.get("policy_excluded_count") or 0)
-    if policy_description:
-        scene += " " + policy_description
-        if policy_count:
-            scene += "；本文件有%d条金额、日期候选按策略默认保留" % policy_count
-        scene += "。本会话不支持中途切换策略；如需更改，请重新上传。"
     case_name = info.get("case_name") or ""
     if case_name:
         inherited = len((info.get("case_data") or {}).get("terms") or [])
-        case_context = ("案件或项目名称：" + case_name + "；已加载 " + str(inherited) +
-                        " 条本案自选规则。以后上传时填写完全相同的名称，才能继续沿用；已导出的文件不会自动修改。")
+        case_context = ("<strong>案件或项目名称：</strong>当前为“" + esc(case_name) +
+                        "”，已加载" + str(inherited) + "条手动添加的敏感字段。填写相同名称可沿用；已导出的文件不会自动修改。")
     else:
-        case_context = "未填写案件名称；新增的自选规则只用于当前文书。"
-    context = esc(scene + " " + case_context)
-    warnings = payload.get("warnings") or []
-    warning_html = ('<div class="alert err" style="margin-bottom:14px"><span>解析提示：<br>' +
-                    '<br>'.join(esc(str(w)) for w in warnings) + '</span></div>') if warnings else ''
-    language_notice_html = (
-        '<div class="alert warn" style="margin-bottom:14px"><span class="i">⚠</span>'
-        '<div><b>检测到以英文为主的文书。英文规则仍有覆盖边界，自动候选不能证明文书已完整脱敏。'
-        '请逐项核对姓名、地址、电话、身份与税务编号、银行信息及金额；未出现的字段可在“添加漏识别的字段”中补录。</b></div></div>'
-        if payload.get("english_dominant") else "")
+        case_context = ("<strong>案件或项目名称：</strong>填写相同名称，可沿用已手动添加的敏感字段；已导出的文件不会自动修改。"
+                        "未填写名称时，手动添加的敏感字段仅用于当前文书。")
+    help_lines = [
+        case_context,
+        "<strong>当前用途：</strong>合同、诉讼及其他文书统一脱敏；诉讼案号、法院名称及公文/机构编号均作为候选，由您在对照页逐项选择。",
+        "<strong>按类型选择：</strong><strong>点击下方“识别类型”中的某个类型</strong>，可批量选择或取消该类型的候选，金额和日期也在此处控制。再次启用该类型时，会恢复该类默认选择。DOCX批注和受支持的修订默认保留并脱敏。",
+        "<strong>按位置选择：</strong><strong>点击左侧原文中的单个高亮字段</strong>，可只取消或选择该处；再次点击可切换回来。关闭某个类型后，仍可点击灰色高亮，单独恢复该处脱敏，不影响同类其他位置。",
+        "低置信候选：低置信候选（工具没把握的字段）默认未勾选，需要您逐项判断。勾选候选右侧的“脱敏”复选框，可批量选择或取消该候选组；也可点击左侧原文中的单个高亮字段，只切换该处。点击候选行文字会定位到原文，不会切换脱敏状态。<strong>未识别的字段可通过“添加漏识别的字段”手动补录。</strong>",
+        "<strong>导出与映射：</strong>映射文件含被替换的原文，请与原件同等保管，不要随脱敏稿外发。若当前选择没有任何替换，页面会提示导出文件将保留原文，并要求您明确确认。",
+    ]
+    if case_name:
+        help_lines[0] = ("<strong>案件或项目名称：</strong>当前名称“" + esc(case_name) +
+                         "”已加载" + str(inherited) + "条手动添加的敏感字段；后续填写相同名称可沿用，已导出的文件不会自动修改。")
+    help_html = "".join("<p>" + line + "</p>" for line in help_lines)
     output_ext = name.rsplit(".", 1)[-1].lower() if "." in name else "txt"
-    image_count = int(payload.get("embedded_image_count") or 0)
-    image_warning_html = (
-        '<div class="alert warn" style="margin-bottom:14px"><span class="i">⚠</span>'
-        '<div><b>当前DOCX含%d处内置图片或绘图对象，工具无法扫描其中的文字，'
-        '请自行核对图片内是否包含敏感信息。</b></div></div>' % image_count
-        if output_ext == "docx" and image_count > 0 else "")
-    # The review page keeps a separate slot for object-specific diagnostics;
-    # current wording consolidates those risks into the common notice.
-    object_warning_html = ""
     revisions = payload.get("revision_inventory") or {}
-    revision_html = ""
+    parse_notices = []
+    def add_notice(text: Any, severity: str = "warn") -> None:
+        text = str(text or "").strip()
+        if text and not any(row["text"] == text for row in parse_notices):
+            parse_notices.append({"severity": severity, "text": text})
+
+    for warning in payload.get("warnings") or []:
+        message = str(warning)
+        severity = ("error" if re.search(
+            r"解析异常|解析失败|未完整读取|无法读取|未提取到有效文本层|识别失败",
+            message) else "warn")
+        add_notice(message, severity)
+
+    for row in (revisions.get("compat_preview") or []):
+        if row.get("verdict") == "blocked":
+            where = str(row.get("part") or row.get("part_kind") or "文档")
+            reason = str(row.get("reason") or row.get("classification") or "不支持的内容控件")
+            add_notice(where + "中有无法自动处理的内容控件：" + reason + "。")
+
+    inventory_present = output_ext == "docx"
+    if inventory_present:
+        inventory_triggered = any((
+            revisions.get("unsupported_manifest"),
+            revisions.get("unsupported_object_manifest"),
+            revisions.get("unsafe_field_instruction_count"),
+            revisions.get("unscanned_part_count"),
+            revisions.get("unredacted_content_count"),
+            revisions.get("header_footer_content_parts"),
+            revisions.get("embedded_image_count") or payload.get("embedded_image_count"),
+            revisions.get("hidden_text_count"),
+            revisions.get("inventory_scope_unknown"),
+            revisions.get("complete") is False,
+        ))
+        for row in revisions.get("unsupported_manifest") or []:
+            label = "、".join(str(row.get(key)) for key in ("part", "location", "kind")
+                             if row.get(key)) or "位置未明"
+            reason = str(row.get("reason") or "未支持修订")
+            add_notice("未支持修订（" + label + "）：" + reason + "，相关内容将按原文保留。")
+        for row in revisions.get("unsupported_object_manifest") or []:
+            label = "、".join(str(row.get(key)) for key in ("part", "kind") if row.get(key)) or "文档对象"
+            reason = str(row.get("reason") or "无法自动检查")
+            add_notice("未支持对象（" + label + "）：" + reason + "，相关内容可能按原文保留。")
+        unsafe_fields = int(revisions.get("unsafe_field_instruction_count") or 0)
+        if unsafe_fields:
+            add_notice("有" + str(unsafe_fields) + "条Word字段指令无法安全检查，相关内容可能按原文保留。")
+        unscanned_parts = int(revisions.get("unscanned_part_count") or 0)
+        if unscanned_parts:
+            part_rows = revisions.get("unscanned_parts") or []
+            labels = ["、".join(str(row.get(key)) for key in ("part", "kind") if row.get(key))
+                      for row in part_rows]
+            detail = "，位置：" + "；".join(labels) if labels else ""
+            add_notice("有" + str(unscanned_parts) + "个文档部件未完成扫描，未扫描到的内容将按原文保留" + detail + "。")
+        unredacted_count = int(revisions.get("unredacted_content_count") or 0)
+        if unredacted_count:
+            manifest = revisions.get("unredacted_content_manifest") or []
+            detail = "，范围：" + "、".join(
+                str(row.get("kind") or "正文") + " " + str(row.get("count") or 0) + "处"
+                for row in manifest) if manifest else ""
+            add_notice("有" + str(unredacted_count) + "处脚注或尾注正文未纳入脱敏，可能按原文保留" + detail + "。")
+        header_footer_parts = revisions.get("header_footer_content_parts") or []
+        if header_footer_parts:
+            labels = [str(row.get("part") or row.get("kind") or "页眉页脚")
+                      for row in header_footer_parts]
+            add_notice("已检查" + str(len(header_footer_parts)) + "个页眉/页脚内容部件，请核对其中的候选是否完整：" +
+                       "、".join(labels) + "。")
+        image_count = int(revisions.get("embedded_image_count") or payload.get("embedded_image_count") or 0)
+        if image_count:
+            add_notice("当前DOCX含" + str(image_count) + "处内置图片或绘图对象。工具无法识别图片像素中的文字；图片或绘图对象的受支持替代文字/标题会作为候选，请核对图片内其余文字及候选范围。")
+        hidden_count = int(revisions.get("hidden_text_count") or 0)
+        if hidden_count:
+            add_notice("发现" + str(hidden_count) + "处隐藏文字，已纳入识别候选，请核对候选是否完整。")
+        unknown_scope = bool(revisions.get("inventory_scope_unknown") or revisions.get("complete") is False)
+        if unknown_scope:
+            add_notice("文档结构盘点未完整完成，无法确认全部自动检查范围；未检查内容可能按原文保留。")
+        if inventory_triggered and not any(
+                "未支持修订" in row["text"] or "未支持对象" in row["text"] or
+                "未完成扫描" in row["text"] or "未脱敏" in row["text"] or
+                "无法安全检查" in row["text"] or "结构盘点未完整" in row["text"]
+                for row in parse_notices):
+            add_notice("本文件包含需要人工核对的修订或文档结构，请查看导出确认清单。")
+
     revision_blocked = False
-    if output_ext == "docx" and (
-            revisions.get("unsupported_manifest") or
-            revisions.get("unsupported_object_manifest") or
-            revisions.get("unsafe_field_instruction_count") or
-            revisions.get("unscanned_part_count") or
-            revisions.get("unredacted_content_count") or
-            revisions.get("header_footer_content_parts") or
-            revisions.get("embedded_image_count") or
-            revisions.get("hidden_text_count")):
-        revision_html = (
-            '<div class="notice-secondary" style="margin:-8px 0 14px 0">'
-            '本文件包含未支持或未扫描结构；未扫描到的内容将按原文保留，具体项目会在导出前列出。'
-            '</div>')
+    payload["parse_notices"] = parse_notices
+    payload["looks_redacted"] = bool(info.get("looks_redacted"))
     data_json = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+    looks_redacted_html = (
+        '<div class="alert warn" style="margin-bottom:12px"><span class="i">⚠</span>'
+        '<span>检测到疑似已脱敏占位符。<a class="btn sm ghost" href="/restore?sid=__SID__">在当前会话中尝试还原</a>；请确认使用的映射文件与原件对应。</span></div>'
+        if info.get("looks_redacted") else "")
 
     body = (REVIEW_BODY
             .replace("__FILENAME__", esc(name))
             .replace("__TYPES__", str(types_n))
             .replace("__OCC__", str(occ_n))
-            .replace("__REVIEW_CONTEXT__", context)
+            .replace("__REVIEW_HELP__", help_html)
+            .replace("__LOOKS_REDACTED_NOTICE__", looks_redacted_html)
             .replace("__EXPORT_REVIEW_NOTICE__", esc(EXPORT_REVIEW_NOTICE))
             .replace("__EXPORT_UNRECOGNIZED_NOTE__", esc(EXPORT_UNRECOGNIZED_NOTE))
             .replace("__EXPORT_REVIEW_NOTICE_JSON__", json.dumps(EXPORT_REVIEW_NOTICE, ensure_ascii=False))
             .replace("__EXPORT_UNRECOGNIZED_NOTE_JSON__", json.dumps(EXPORT_UNRECOGNIZED_NOTE, ensure_ascii=False))
-            .replace("__LANGUAGE_NOTICE__", language_notice_html)
-            .replace("__REVISION_NOTICE__", revision_html)
-            .replace("__IMAGE_WARNING__", image_warning_html)
-            .replace("__OBJECT_WARNING__", object_warning_html)
             .replace("__REVISION_BLOCKED_ATTR__", 'disabled aria-disabled="true"' if revision_blocked else "")
             .replace("__REVISION_BUTTON_LABEL__", "修订处理后重新上传" if revision_blocked else "确认并执行脱敏")
-            .replace("__PARSE_WARNINGS__", warning_html)
             .replace("__OUTPUT_EXT__", esc(output_ext))
             .replace("__SID__", esc(sid))
             .replace("__DATA__", data_json))
@@ -2107,6 +2227,11 @@ async function delHistory(sid){
     else{ alert('删除失败：'+(j.error||'未知错误')); }
   }catch(e){ alert('请求失败：'+String(e)); }
 }
+function confirmMappingDownload(event){
+  var accepted=window.confirm('映射文件包含可还原的原文，请与原件同等保管，不要随脱敏稿外发。确认下载？');
+  if(!accepted && event){event.preventDefault();event.stopPropagation();}
+  return accepted;
+}
 function clearPlaintext(){openClearModal();}
 async function confirmClearPlaintext(){
   if(clearBusy)return;
@@ -2186,7 +2311,10 @@ def _hist_rows(rows) -> str:
         for label, fn in (r.get("files") or []):
             url = "/history/download/%s/%s" % (sid, urllib.parse.quote(str(fn)))
             cls = "btn sm" if label in ("脱敏稿", "还原稿") else "btn sm ghost"
-            acts.append('<a class="%s" href="%s">%s</a>' % (cls, esc(url), esc(label)))
+            confirm = (' onclick="return confirmMappingDownload(event)"'
+                       if str(fn).lower().endswith(".mapping.json") else "")
+            acts.append('<a class="%s" href="%s"%s>%s</a>' %
+                        (cls, esc(url), confirm, esc(label)))
         acts.append('<button class="btn sm warn" type="button" onclick="delHistory(\'%s\')">删除</button>' % sid)
         out.append(
             '<div class="histrow">'

@@ -68,8 +68,8 @@ from contract_redactor import (
 
 
 APP_NAME = "contract_app_server"
-APP_VERSION = "1.3.0-dev"
-APP_REVISION = "r99"
+APP_VERSION = "1.3.1"
+APP_REVISION = "winreturn-repair-1"
 DEFAULT_PORT = 18800
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
 MAX_REQUEST_BODY_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024
@@ -79,8 +79,9 @@ REQUEST_READ_TOTAL_SECONDS = 120
 MAX_MULTIPART_FIELDS = 32
 MAX_MULTIPART_FIELD_NAME_CHARS = 80
 MAX_MULTIPART_NON_FILE_BYTES = 64 * 1024
-PDF_JOBS: Dict[str, threading.Thread] = {}
+PDF_JOBS: Dict[str, Any] = {}
 PDF_JOBS_LOCK = threading.RLock()
+PDF_JOB_GENERATIONS: Dict[str, int] = {}
 SERVICE_EVENT_LOCK = threading.Lock()
 
 
@@ -159,37 +160,158 @@ def _finish_service_state(server: ThreadingHTTPServer, stop_type: str,
     _write_service_state(server.state.work_dir, state)
 
 
-def _start_pdf_job(state: "AppState", sid: str) -> None:
-    def work():
-        try:
-            pdf_project.process(state.work_dir, sid)
-            try:
-                p = pdf_project.load(state.work_dir, sid)
-                if p["stage"] == "review" and p["case_name"]:
-                    with state.case_lock:
-                        case = state.load_case(p["case_name"])
-                        p = pdf_project.sync_case(state.work_dir, sid,
-                                                  case.get("terms", []), case.get("numbers", []))
-                        case["numbers"] = p["numbers"]
-                        state.save_case(p["case_name"], case)
-            except Exception as exc:
-                sys.stderr.write("[pdf] case sync failed: %s\n" % type(exc).__name__)
-        finally:
-            # 任务结束后清出登记表，避免 PDF_JOBS 只增不删。
-            with PDF_JOBS_LOCK:
-                PDF_JOBS.pop(sid, None)
+def _job_thread(entry):
+    return entry.get("thread") if isinstance(entry, dict) else entry
+
+
+def _job_alive(entry) -> bool:
+    thread = _job_thread(entry)
+    return bool(thread and thread.is_alive())
+
+
+def _cancel_pdf_job(sid: str, timeout: float = 5.0) -> bool:
+    with PDF_JOBS_LOCK:
+        entry = PDF_JOBS.get(sid)
+        if not _job_alive(entry):
+            return True
+        if isinstance(entry, dict):
+            entry["cancel"].set()
+        thread = _job_thread(entry)
+    thread.join(timeout)
+    if thread.is_alive():
+        return False
+    with PDF_JOBS_LOCK:
+        if PDF_JOBS.get(sid) is entry:
+            PDF_JOBS.pop(sid, None)
+    return True
+
+
+def _signal_pdf_job_cancel(sid: str) -> None:
+    with PDF_JOBS_LOCK:
+        entry = PDF_JOBS.get(sid)
+        if isinstance(entry, dict):
+            entry["cancel"].set()
+
+
+def _start_pdf_job(state: "AppState", sid: str) -> bool:
     with PDF_JOBS_LOCK:
         existing = PDF_JOBS.get(sid)
-        if existing and existing.is_alive():
-            return
-        job = threading.Thread(target=work, daemon=True)
-        PDF_JOBS[sid] = job
+        if _job_alive(existing):
+            return False
+        generation = PDF_JOB_GENERATIONS.get(sid, 0) + 1
+        PDF_JOB_GENERATIONS[sid] = generation
+        cancel = threading.Event()
+        entry = {"generation": generation, "thread": None, "cancel": cancel,
+                 "started": time.monotonic(), "beat": time.monotonic()}
+
+        def is_current():
+            with PDF_JOBS_LOCK:
+                if PDF_JOBS.get(sid) is not entry:
+                    return False
+                entry["beat"] = time.monotonic()
+                return True
+
+        def work():
+            try:
+                pdf_project.process(state.work_dir, sid, generation=generation,
+                                    is_current=is_current, cancel=cancel)
+                try:
+                    p = pdf_project.load(state.work_dir, sid)
+                    if p["stage"] == "review" and p["case_name"]:
+                        with state.case_lock:
+                            case = state.load_case(p["case_name"])
+                            p = pdf_project.sync_case(state.work_dir, sid,
+                                                      case.get("terms", []),
+                                                      case.get("numbers", []))
+                            case["numbers"] = p["numbers"]
+                            state.save_case(p["case_name"], case)
+                except Exception as exc:
+                    sys.stderr.write("[pdf] case sync failed: %s\n" % type(exc).__name__)
+            finally:
+                with PDF_JOBS_LOCK:
+                    if PDF_JOBS.get(sid) is entry:
+                        PDF_JOBS.pop(sid, None)
+
+        job = threading.Thread(target=work, name="pdf-job-" + sid, daemon=True)
+        entry["thread"] = job
+        PDF_JOBS[sid] = entry
         job.start()
+        return True
+
+
+def _recover_pdf_jobs(state: "AppState") -> None:
+    try:
+        candidates = sorted(os.listdir(state.work_dir))
+    except OSError:
+        return
+    for sid in candidates:
+        if not _SID_RE_CLEAN.fullmatch(sid):
+            continue
+        manifest = os.path.join(state.work_dir, sid, "pdf-project.json")
+        if not os.path.isfile(manifest):
+            continue
+        try:
+            project = pdf_project.load(state.work_dir, sid)
+            if project.get("stage") not in ("processing", "pending"):
+                continue
+            pdf_project.original(state.work_dir, sid, project)
+            _start_pdf_job(state, sid)
+        except Exception:
+            try:
+                with pdf_project._lock(sid):
+                    project = pdf_project.load(state.work_dir, sid)
+                    project["stage"] = "failed"
+                    project["error"] = "服务重启后未能恢复处理，请重试"
+                    pdf_project.save(state.work_dir, sid, project)
+            except Exception as exc:
+                sys.stderr.write("[pdf] recovery failed: %s\n" % type(exc).__name__)
+
+
+def _stop_pdf_ocr() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import contract_pdf_win_ocr
+        contract_pdf_win_ocr.stop()
+    except Exception as exc:
+        sys.stderr.write("[pdf-ocr] stop failed: %s\n" % type(exc).__name__)
+
+
+def _stop_pdf_jobs(timeout: float = 5.0) -> None:
+    with PDF_JOBS_LOCK:
+        entries = list(PDF_JOBS.values())
+        for entry in entries:
+            if isinstance(entry, dict):
+                entry["cancel"].set()
+    _stop_pdf_ocr()
+    deadline = time.monotonic() + timeout
+    for entry in entries:
+        thread = _job_thread(entry)
+        if thread and thread is not threading.current_thread():
+            thread.join(max(0.0, deadline - time.monotonic()))
+
+
+def _prewarm_pdf_ocr() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import contract_pdf_win_ocr
+        contract_pdf_win_ocr.prewarm_async()
+    except Exception as exc:
+        sys.stderr.write("[pdf-ocr] prewarm dispatch failed: %s\n" % type(exc).__name__)
+
+
+class ContractHTTPServer(ThreadingHTTPServer):
+    def server_close(self):
+        try:
+            _stop_pdf_jobs()
+        finally:
+            super().server_close()
 
 
 def _pdf_jobs_active(sids) -> bool:
     with PDF_JOBS_LOCK:
-        return any(PDF_JOBS.get(sid) and PDF_JOBS[sid].is_alive() for sid in sids)
+        return any(_job_alive(PDF_JOBS.get(sid)) for sid in sids)
 
 
 # ------------------------------------------------- 明文清理（H1）---------------
@@ -354,6 +476,7 @@ def retention_sweep(work_dir: str) -> int:
 from contract_app_ui import (          # noqa: E402
     build_upload_page,
     build_workspace_body,
+    build_restore_landing_page,
     build_review_page,
     build_expired_page,
     build_history_page,
@@ -742,7 +865,8 @@ def _run_detector(path: str, terms=None, litigation=False, unified=True,
                 if part == "word/document.xml" or re.fullmatch(r"word/(?:header|footer)\d+\.xml", part):
                     rows = review_ext.classify_content_controls(part, XML.fromstring(package.read(part)))
                     for row in rows:
-                        compat_preview.append({"part_kind": "正文" if part == "word/document.xml" else "页眉页脚",
+                        compat_preview.append({"part": part,
+                            "part_kind": "正文" if part == "word/document.xml" else "页眉页脚",
                             "classification": row["classification"], "reason": row["reason"],
                             "verdict": "supported" if row["classification"] != "unsupported" else "blocked"})
     if revision_inventory is not None:
@@ -808,7 +932,7 @@ def _review_confirmation_required(inventory: Optional[Dict[str, Any]]) -> bool:
 
 def _revision_hard_block_reason(mode: str, ext: str,
                                 inventory: Optional[Dict[str, Any]]) -> str:
-    """Return no user-facing export gate; inventory limitations become risk notes."""
+    """Revision inventory limits are reported as risks, not hard gates."""
     return ""
 
 
@@ -846,6 +970,14 @@ def _revision_export_risk(inventory: Optional[Dict[str, Any]]) -> str:
 
     unsupported = int(inventory.get("unsupported_revision_count") or 0)
     unsupported = max(unsupported, len(inventory.get("unsupported_manifest") or []))
+    move_kinds = {
+        "moveFrom", "moveTo", "moveFromRangeStart", "moveFromRangeEnd",
+        "moveToRangeStart", "moveToRangeEnd", "customXmlMoveFromRangeStart",
+        "customXmlMoveFromRangeEnd", "customXmlMoveToRangeStart",
+        "customXmlMoveToRangeEnd",
+    }
+    move_rows = [row for row in inventory.get("unsupported_manifest") or []
+                 if str(row.get("kind") or "") in move_kinds]
     note_count = sum(int(row.get("count") or 0)
                      for row in inventory.get("unredacted_content_parts") or [])
     other_unscanned = bool(
@@ -853,12 +985,22 @@ def _revision_export_risk(inventory: Optional[Dict[str, Any]]) -> str:
         inventory.get("unsupported_object_manifest") or
         inventory.get("unsafe_field_instruction_count") or
         inventory.get("embedded_image_count"))
-    if not (unsupported or note_count or other_unscanned):
+    if not (unsupported or move_rows or note_count or other_unscanned):
         return ""
 
     details = []
     if unsupported:
         details.append("%d处未支持修订" % unsupported)
+    if move_rows:
+        locations = []
+        for row in move_rows:
+            label = "、".join(str(row.get(key) or "")
+                             for key in ("part", "location") if row.get(key))
+            if label and label not in locations:
+                locations.append(label)
+        location_text = "（位置：" + "；".join(locations[:5]) + "）" if locations else ""
+        details.append("移动修订内容未自动脱敏" + location_text +
+                       "，拒绝修订后可能显示原文")
     if note_count:
         details.append("%d条脚注或尾注内容" % note_count)
     if other_unscanned:
@@ -894,13 +1036,25 @@ def _looks_like_redacted(redacted_path: str) -> bool:
     try:
         if ext == ".docx":
             import zipfile
+            from xml.etree import ElementTree as ET
+            paragraph_tag = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"
+            text_tag = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
             with zipfile.ZipFile(redacted_path) as z:
-                names = [n for n in z.namelist() if n.startswith("word/") and n.endswith(".xml")]
-                for n in names[:8]:
-                    with z.open(n) as f:
-                        chunk = f.read(200_000).decode("utf-8", errors="ignore")
-                    if PLACEHOLDER_PATTERN.search(chunk):
-                        return True
+                names = [n for n in z.namelist()
+                         if n.startswith("word/") and n.endswith(".xml")]
+                for name in names:
+                    try:
+                        with z.open(name) as source:
+                            for _, paragraph in ET.iterparse(source, events=("end",)):
+                                if paragraph.tag != paragraph_tag:
+                                    continue
+                                text = "".join(node.text or ""
+                                               for node in paragraph.iter(text_tag))
+                                if PLACEHOLDER_PATTERN.search(text):
+                                    return True
+                                paragraph.clear()
+                    except (ET.ParseError, OSError, RuntimeError, ValueError):
+                        continue
             return False
         if ext in (".txt", ".md"):
             with open(redacted_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -1190,8 +1344,6 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
             try:
                 p = pdf_project.load(self.state.work_dir, m.group(1))
-                if p["stage"] == "processing":
-                    _start_pdf_job(self.state, m.group(1))
                 self._send_json({"ok": True, "project": pdf_project.public(p)})
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 404)
@@ -1296,7 +1448,30 @@ class AppHandler(BaseHTTPRequestHandler):
             if not info:
                 self._send_html(build_expired_page())
                 return
-            self._send_html(build_workspace_body(sid, info))
+            destination = "/restore" if info.get("mode") == "restore" else "/review"
+            self.send_response(302)
+            self.send_header("Location", destination + "?sid=" + urllib.parse.quote(sid))
+            self.end_headers()
+            return
+        if path == "/restore":
+            info = self.state.get(sid)
+            restore_from_review = bool(
+                info and info.get("mode") == "redact" and info.get("looks_redacted"))
+            if not info or (info.get("mode") != "restore" and not restore_from_review):
+                self._send_html(build_expired_page(), 404)
+                return
+            restore_info = dict(info)
+            if restore_from_review:
+                embedded = False
+                try:
+                    embedded = _extract_embedded_mapping(info["input_path"]) is not None
+                except Exception:
+                    pass
+                restore_info.update(
+                    mode="restore", mapping_path="embedded" if embedded else None,
+                    sibling_mapping=None, has_embedded_mapping=embedded,
+                    _restore_from_review=True)
+            self._send_html(build_restore_landing_page(sid, restore_info))
             return
         if path == "/review":
             info = self.state.get(sid)
@@ -1555,8 +1730,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "无法读取会话目录"}, 500)
                     return
                 with PDF_JOBS_LOCK:
-                    active = any(PDF_JOBS.get(sid) and PDF_JOBS[sid].is_alive()
-                                 for sid in session_ids)
+                    active = any(_job_alive(PDF_JOBS.get(sid)) for sid in session_ids)
                     result = None if active else purge_all_plaintext(self.state.work_dir)
                 if active:
                     self._send_json({"ok": False,
@@ -1572,7 +1746,7 @@ class AppHandler(BaseHTTPRequestHandler):
             else:
                 sid = str(payload.get("sid") or "")
                 with PDF_JOBS_LOCK:
-                    active = bool(PDF_JOBS.get(sid) and PDF_JOBS[sid].is_alive())
+                    active = _job_alive(PDF_JOBS.get(sid))
                     result = None if active else purge_plaintext(self.state.work_dir, sid)
                 if active:
                     self._send_json({"ok": False,
@@ -1759,11 +1933,11 @@ class AppHandler(BaseHTTPRequestHandler):
                         "looks_redacted": is_redacted,
                         "mapping_found": bool(chosen),
                         "mapping_source": "embedded" if chosen == "embedded" else "file" if chosen else None,
-                        "redirect": f"/workspace?sid={sid}",
+                        "redirect": f"/restore?sid={sid}",
                     })
                     return
 
-                # ---- redact mode ----
+                # Rules already validated before creating any upload project.
                 case_data = self.state.load_case(case_name)
                 terms = [dict(t, scope="case") for t in case_data.get("terms", [])]
                 try:
@@ -1877,7 +2051,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "looks_redacted": is_redacted,
                     "revision_blocked": bool(revision_block_reason),
                     "mapping_found": os.path.exists(sib_mapping),
-                    "redirect": f"/workspace?sid={sid}",
+                    "redirect": f"/review?sid={sid}",
                 })
             except D.PdfTextLayerError as exc:
                 _record_service_event(self.state.work_dir, self._upload_request_id,
@@ -1953,7 +2127,13 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
             try:
                 req = json.loads(body_bytes.decode("utf-8"))
+                if req.get("action") == "retry-page" and not _cancel_pdf_job(m.group(1)):
+                    self._send_json({"ok": False,
+                                     "error": "旧任务正在停止，请稍后重试"}, 409)
+                    return
                 result = pdf_project.update(self.state.work_dir, m.group(1), req)
+                if req.get("action") == "retry-page":
+                    _start_pdf_job(self.state, m.group(1))
                 self._send_json({"ok": True, "project": result})
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 400)
@@ -2015,9 +2195,15 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
             try:
                 req = json.loads(body_bytes.decode("utf-8"))
+                if req.get("action") == "retry" and not _cancel_pdf_job(m.group(1)):
+                    self._send_json({"ok": False,
+                                     "error": "旧任务正在停止，请稍后重试"}, 409)
+                    return
                 result = pdf_project.control(self.state.work_dir, m.group(1), req.get("action"))
                 if result["stage"] == "processing" and req.get("action") == "retry":
                     _start_pdf_job(self.state, m.group(1))
+                elif req.get("action") == "cancel":
+                    _signal_pdf_job_cancel(m.group(1))
                 self._send_json({"ok": True, "project": result})
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 400)
@@ -2031,6 +2217,10 @@ class AppHandler(BaseHTTPRequestHandler):
                 req = json.loads(body_bytes.decode("utf-8")) or {}
                 sid = m.group(1)
                 project = pdf_project.load(self.state.work_dir, sid)
+                if not project.get("rules_sha256"):
+                    self._send_json({"ok": False, "code": "RULES_CHANGED",
+                                     "error": "旧PDF项目缺少规则快照，请重新上传并复核后再导出"}, 409)
+                    return
                 if project.get("rules_sha256"):
                     live_rules = _read_rules_file_bytes(user_rules_path())
                     if _sha256_bytes(live_rules or b"") != project["rules_sha256"]:
@@ -2048,6 +2238,9 @@ class AppHandler(BaseHTTPRequestHandler):
                                  "url": f"/history/download/{sid}/{urllib.parse.quote(result['name'])}",
                                  "exported_revision": result.get("exported_revision"),
                                  "notes": result.get("notes", [])})
+            except pdf_project.PdfDispositionRequired as exc:
+                self._send_json({"ok": False, "code": exc.code,
+                                 "error": str(exc)}, 400)
             except (ValueError, TypeError, json.JSONDecodeError, FileNotFoundError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 400)
             except Exception as exc:
@@ -2158,6 +2351,13 @@ class AppHandler(BaseHTTPRequestHandler):
             if action == "export-plan":
                 self._send_json({"ok": True, "selection_digest": selection_digest})
                 return
+            requested_items = req.get("items")
+            zero_selection = isinstance(requested_items, list) and not requested_items
+            if zero_selection:
+                if req.get("confirmed") is True:
+                    if req.get("allow_no_replacements") is not True:
+                        self._send_json({"ok": False, "error": "零替换导出必须明确确认"}, 400)
+                        return
             if "selection_digest" in req and req["selection_digest"] != selection_digest:
                 self._send_json({"ok": False, "code": "EXPORT_SELECTION_STALE",
                                  "error": "原件、选择或策略已变化，请重新检查导出清单"}, 409)
@@ -2228,7 +2428,10 @@ class AppHandler(BaseHTTPRequestHandler):
 
             # 复核页逐个位置的勾选（用户在预览里点掉的高亮必须真的不替换）
             enabled_items = req.get("items")
-            if not isinstance(enabled_items, list):
+            if enabled_items is not None and not isinstance(enabled_items, list):
+                self._send_json({"ok": False, "error": "位置选择无效"}, 400)
+                return
+            if enabled_items is None:
                 enabled_items = None
 
             warnings = ""
@@ -2292,7 +2495,10 @@ class AppHandler(BaseHTTPRequestHandler):
                     rules_path=_active_rules_path(),
                     low_confidence_items=low_conf_items,
                     confirmation=confirmation,
-                    allow_no_replacements=True,
+                    allow_no_replacements=(
+                        True if not isinstance(enabled_items, list) or enabled_items
+                        else req.get("confirmed") is not True or
+                        req.get("allow_no_replacements") is True),
                     revision_acknowledged=revision_acknowledged,
                     revision_ack_digest=revision_ack_digest,
                     unredacted_content_acknowledged=review_acknowledged,
@@ -2330,9 +2536,11 @@ class AppHandler(BaseHTTPRequestHandler):
                             label, where + "，" if where else "", value[:120]))
                     red.append("以下已选内容未能自动改写，将按原文保留；导出后可在Word中搜索并手动处理：" +
                                "；".join(rows))
-                if (int(r.get("applied") or 0) == 0 and
-                        not int(r.get("comments_removed") or 0) and
-                        not red):
+                if zero_selection:
+                    red.append("当前选择为零处替换，导出文件将保留原文。")
+                elif (int(r.get("applied") or 0) == 0 and
+                      not int(r.get("comments_removed") or 0) and
+                      not red):
                     red.append("本次没有替换内容，原文将保留且不生成映射文件。")
                 soft_notes = [
                     EXPORT_REVIEW_NOTICE + " " + EXPORT_UNRECOGNIZED_NOTE
@@ -2419,6 +2627,13 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "session not found"}, 404)
                 return
 
+            restore_from_uploaded_source = self.headers.get(
+                "X-Restore-Uploaded-Source") == "1"
+            if restore_from_uploaded_source and not (
+                    info.get("mode") == "redact" and info.get("looks_redacted")):
+                self._send_json({"ok": False, "error": "当前会话不能从上传源文件还原"}, 400)
+                return
+
             input_path = info["input_path"]
             ext = _ext_of(input_path)
             out_dir = os.path.join(self.state.work_dir, sid, "out")
@@ -2443,9 +2658,16 @@ class AppHandler(BaseHTTPRequestHandler):
                 req_mapping = req.get("mapping")
                 if req_mapping:
                     mapping_path = req_mapping
-            if not mapping_path:
+            if restore_from_uploaded_source and not mapping_path:
+                embedded = (_extract_embedded_mapping(input_path)
+                            if ext == ".docx" else None)
+                if not embedded:
+                    self._send_json({"ok": False,
+                                     "error": "上传源文件没有内嵌映射，请选择与该文件对应的JSON格式映射文件。"}, 400)
+                    return
+            elif not mapping_path:
                 # 当前会话生成的映射反映复核勾选与手工补录；上传时的映射只是初稿。
-                if info.get("mode") != "restore":
+                if info.get("mode") != "restore" and not restore_from_uploaded_source:
                     generated = os.path.join(out_dir, f"{stem}_脱敏{ext or '.txt'}.mapping.json")
                     if os.path.exists(generated):
                         mapping_path = generated
@@ -2460,7 +2682,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
             # 在「脱敏会话」里点还原时，要还原的是**刚生成的脱敏产物**（含占位符），
             # 而不是最初上传的原件 —— 后者本来就没有占位符，还原会变成空操作。
-            if info.get("mode") != "restore":
+            if info.get("mode") != "restore" and not restore_from_uploaded_source:
                 redacted_candidate = os.path.join(out_dir, f"{stem}_脱敏{ext or '.txt'}")
                 if os.path.exists(redacted_candidate):
                     input_path = redacted_candidate
@@ -2499,7 +2721,7 @@ class AppHandler(BaseHTTPRequestHandler):
 def _build_review_payload(report: Dict[str, Any], doc_blocks: List[Any],
                           case_numbers=None, terms=None, comment_info=None,
                           revision_inventory=None,
-                          policy_id=Policy.PRESERVE_TRANSACTION) -> Dict[str, Any]:
+                          policy_id=Policy.PRIVACY_FIRST) -> Dict[str, Any]:
     """构造 /review 页所需的 JSON：每段的全文 + 高亮区间 + 占位符预览。
 
     与 detector 的 _build_review_payload 类似，但额外保留 occ 的【全 occurrence 索引】
@@ -2605,13 +2827,16 @@ def _build_review_payload(report: Dict[str, Any], doc_blocks: List[Any],
                 int(row.get("count") or 0)
                 for row in (revision_inventory.get("unredacted_content_parts") or [])),
             "unredacted_content_manifest": [
-                {"kind": row.get("kind"), "count": int(row.get("count") or 0)}
+                {"part": row.get("part"), "kind": row.get("kind"),
+                 "count": int(row.get("count") or 0)}
                 for row in (revision_inventory.get("unredacted_content_parts") or [])
                 if int(row.get("count") or 0) > 0
             ],
             "review_digest": str(revision_inventory.get("review_digest") or ""),
             "embedded_image_count": int(
                 revision_inventory.get("embedded_image_count") or 0),
+            "hidden_text_count": int(
+                revision_inventory.get("hidden_text_count") or 0),
             "header_footer_content_parts": [
                 {key: row[key] for key in ("part", "kind") if key in row}
                 for row in (revision_inventory.get("header_footer_content_parts") or [])
@@ -2624,6 +2849,12 @@ def _build_review_payload(report: Dict[str, Any], doc_blocks: List[Any],
                 revision_inventory.get("text_object_count") or 0),
             "object_digest": str(revision_inventory.get("object_digest") or ""),
             "unscanned_part_count": len(revision_inventory.get("unscanned_parts") or []),
+            "unscanned_parts": [
+                {key: row[key] for key in ("part", "kind", "reason") if key in row}
+                for row in (revision_inventory.get("unscanned_parts") or [])
+            ],
+            "inventory_scope_unknown": bool(
+                revision_inventory.get("inventory_scope_unknown")),
             "external_relationship_count": int(
                 revision_inventory.get("external_relationship_count") or 0),
             "external_relationship_digest": str(
@@ -2689,9 +2920,10 @@ def start_app_server(host: str, port: int, work_dir: str) -> ThreadingHTTPServer
     # 这里直接升级 do_POST 的构造：覆盖 _build_review_payload 用更完整的信息
 
     handler_cls = _make_handler(state)
-    server = ThreadingHTTPServer((host, port), handler_cls)
+    server = ContractHTTPServer((host, port), handler_cls)
     server.state = state
     server.service_state = _start_service_state(work_dir)
+    _recover_pdf_jobs(state)
     return server
 
 
@@ -2757,6 +2989,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     workdir = os.path.abspath(args.workdir)
     os.makedirs(workdir, exist_ok=True)
     server = start_app_server(args.host, args.port, workdir)
+    _prewarm_pdf_ocr()
     base = f"http://{args.host}:{args.port}"
     print()
     print("  ┌──────────────────────────────────────────────────────┐")

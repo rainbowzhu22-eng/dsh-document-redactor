@@ -7,12 +7,12 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { RedactorService, validateReady } from '../service.js';
+import { RedactorService, validateReady, REVISION } from '../service.js';
 import { LocalRuntime, dataRoot, findPython } from '../runtime.js';
 import { makeRoute, apply, inject } from '../index.js';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const ready = { type: 'ready', revision: 'r99', url: 'http://127.0.0.1:12345/' };
+const ready = { type: 'ready', revision: REVISION, url: 'http://127.0.0.1:12345/' };
 test('macOS首次准备选择可安装独立扩展的系统Python', { skip: process.platform !== 'darwin' }, async () => {
   const python = await findPython(undefined, { ...process.env, DSH_REDACTOR_PYTHON: '' });
   assert.ok(python.startsWith('/'));
@@ -184,7 +184,7 @@ test('真实R99服务就绪、首页及停止契约，无安装或模型调用',
     owned = new LocalRuntime(data).launch(process.env.DSH_TEST_PYTHON);
     const value = await owned.ready;
     const url = validateReady(value);
-    const health = await (await fetch(url + 'health')).json(); assert.equal(health.revision, 'r99');
+    const health = await (await fetch(url + 'health')).json(); assert.equal(health.revision, REVISION);
     const html = await (await fetch(url)).text(); assert.ok(html.includes('打开规则文件'));
     await owned.stop(); await owned.closed;
     await assert.rejects(fetch(url + 'health', { signal: AbortSignal.timeout(1000) }));

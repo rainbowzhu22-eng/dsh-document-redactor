@@ -40,9 +40,7 @@
     python contract_sensitive_detector.py *.pdf --out-dir reports --format json,html
     python contract_sensitive_detector.py c.docx --min-confidence 0.7 --min-severity medium
     python contract_sensitive_detector.py c.docx --allowlist allowlist.txt --config cfg.json
-    python contract_sensitive_detector.py --selftest
 
-作者：合同脱敏方案 / v1.0
 ================================================================================
 """
 
@@ -64,7 +62,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
-__version__ = "1.3.0-dev"
+__version__ = "1.3.0"
 ENGINE_NAME = "offline-rule-detector"
 
 # ==============================================================================
@@ -741,7 +739,7 @@ def docx_para_units(p):
       ('t', w:t 序号, 该节点内字符下标)  —— 真实可写字符；
       ('keep', 'tab' | 'br')             —— tab/br 折算出的**不可写保留位**。
 
-    用途（R6）：让改写/还原阶段与检测阶段使用**同一套段落文本口径**，
+    用途：让改写/还原阶段与检测阶段使用**同一套段落文本口径**，
     消除历史缺陷「检测把 <w:tab/> 折算成空格、改写忽略 tab」造成的偏移错位。
     改写时保留位原样跳过，故制表符/换行的数量与位置不受替换影响。
     """
@@ -957,7 +955,8 @@ def extract_docx(path: str, include_headers: bool = True) -> Document:
     doc_warnings: List[str] = []
     from contract_docx_revisions import (
         analyze_docx_revisions, read_external_hyperlink_targets,
-        read_vml_text_targets, REVISION_TAGS,
+        read_vml_text_targets, read_docx_readable_attribute_targets,
+        REVISION_TAGS,
     )
     revision_tags = {_DOCX_W + name for name in REVISION_TAGS}
     try:
@@ -1152,6 +1151,20 @@ def extract_docx(path: str, include_headers: bool = True) -> Document:
             part_block_index=paragraph_index,
             target_metadata={
                 "node_path": row["node_path"],
+                "attribute": row["attribute"],
+                "target_sha256": row["target_sha256"],
+                "structure_sha256": row["structure_sha256"],
+            }))
+
+    for row in read_docx_readable_attribute_targets(path):
+        blocks.append(Block(
+            text=row["value"], block_type="textbox",
+            location="图片替代文字（%s）" % row["attribute"],
+            part_name=row["part"], field_kind="docx_readable_attribute",
+            attribute_name=row["attribute"],
+            target_metadata={
+                "node_path": row["node_path"],
+                "element": row["element"],
                 "attribute": row["attribute"],
                 "target_sha256": row["target_sha256"],
                 "structure_sha256": row["structure_sha256"],
@@ -2942,7 +2955,7 @@ ORG_LEAD_PRONOUNS = ("本人", "该公司", "该司", "该行", "该店", "该�
 #        剥掉，残留在紧邻位置反而会误杀真名（如「本合同由北京宏远…有限公司」的「由」）；
 #        且这些单字场景本就被 len>=5 门槛挡住（`各分公司` 4 字、`由分公司` 3 字），收录无收益。
 #     ② 「上报」「提交」——「上海报业」含子串「上报」，收进来会误杀真机构名。
-# 故本表宁可小：可回归、可扩展。新增词必须逐词跑 tests/test_org_false_positive.py。
+# 故本表宁可小：可扩展。新增词应结合实际规则效果复核。
 ORG_ANTI_CONTEXT = (
     "部分", "根据", "建议", "采用", "报送",
     "全部", "所有", "其中", "下属",
@@ -2953,9 +2966,9 @@ ORG_ANTI_CONTEXT = (
 # ⚠️ 按「**尾匹配**」判定，而非并入 `ORG_STOPWORDS`：后者是**精确匹配**（`value in ORG_STOPWORDS`），
 #    拦不住被左扩张吞长的误报值（如 `最终报送人民银行` ≠ `人民银行`）。
 # ⚠️ `人行` / `央行` 本身不含机构后缀，`ORG_SUFFIX_RE` 不会锚定它们，登记属**防御性**
-#    （防将来新增机构后缀规则时回归）。
+#    （防止后续机构后缀规则扩展造成误报）。
 # 取舍：若合同主体确为某人民银行分支机构（如「中国人民银行××市中心支行」），本名单会将其
-#      漏检 —— 与 R7 同口径的「宁漏不错」，可由复核页「添加漏识别的字段」手动补录兜底。
+#      漏检 —— 与既有规则同口径的「宁漏不错」，可由复核页「添加漏识别的字段」手动补录兜底。
 ORG_NONPARTY_TAILS = (
     "中国人民银行", "人民银行",
     "人行", "央行",
@@ -3277,7 +3290,7 @@ def _is_org_boundary(text, start, index):
 def _expand_org_left(text: str, end: int) -> Tuple[int, str]:
     """以「后缀结束位置」为锚点向左扩张出完整机构名。
 
-    R8-A：候选切点由旧的「逐字覆盖（等价于取最后遇到的边界字）」改为
+    候选切点由旧的「逐字覆盖（等价于取最后遇到的边界字）」改为
     「在所有候选切点中取最靠右的一个」，并对单字边界字排除
     「左侧紧邻行政区划前缀」的情形。旧实现会在名字内部含边界字时多切：
       广州「至」诚系统集成有限公司  → 诚系统集成有限公司（残留明文「广州至」）
@@ -4443,7 +4456,7 @@ class Settings:
     # v1.3.0「低置信可见可勾」：复核路径开启后，min_confidence 以下的候选不再物理删除，
     # 而是保留到 display_min_confidence 下限，由前端标注「把握较低」并默认不勾。
     # 下限以下的候选只计数（engine.last_scan_stats），不静默丢弃。
-    # 默认关闭 —— 保持 CLI / 既有回归的行为与计数不变。
+    # 默认关闭 —— 保持命令行行为与计数不变。
     retain_low_confidence: bool = False
     display_min_confidence: float = 0.3
 
@@ -5210,7 +5223,7 @@ class DetectorEngine:
             #   ① 紧邻：括号须紧贴本机构全称（中间只容 之/的/与/及/和/、 与空白）；
             #   ② 字符全含：引号内**每个字**都出现在全称里 —— 用「全含」而非重合率，
             #      否则 2 字真简称（如「宏远」）会被误杀；
-            #   ③ 黑名单：复用 R7 的 _is_nonparty_alias()（下方统一出口还会再查一次）；
+            #   ③ 黑名单：复用 _is_nonparty_alias()（下方统一出口还会再查一次）；
             #   ④ 通名 / 地名：单独成词的 集成/系统/公司/上海 一类一律拒，
             #      否则会把全文的「集成」「广州」整体替换掉。
             if om.attrs.get("script") != "latin":
@@ -5347,7 +5360,9 @@ class DetectorEngine:
                         blocks[block_index].field_kind == "external_relationship_target"):
                     continue
             # 400 / 800 服务热线单独放行（如 800 800 8888 只含 0 和 8，会被误判成占位数据）
-            if is_placeholder(raw_value) and not (
+            explicit_license_context = (
+                m.type_id == "LICENSE_NO" and bool(m.attrs.get("matched_keyword")))
+            if is_placeholder(raw_value) and not explicit_license_context and not (
                     m.type_id == "PHONE_LANDLINE" and HOTLINE_RE.match(raw_value.strip())):
                 continue
             if _norm_key(raw_value) in {_norm_key(a) for a in st.allowlist}:
@@ -5699,11 +5714,14 @@ def write_mapping(report: Dict[str, Any], path: str) -> Dict[str, Any]:
     ]
 
     is_docx = report.get("source", {}).get("type") == "docx"
+    source_info = dict(report.get("source") or {})
+    for path_key in ("path", "input_path", "absolute_path", "local_path"):
+        source_info.pop(path_key, None)
     payload = {
         "version": 2 if is_docx else 1,
         "schema": "contract-mapping/v2" if is_docx else "contract-mapping/v1",
         "engine": report.get("engine", {"name": ENGINE_NAME, "version": __version__, "mode": "offline"}),
-        "source": report.get("source", {}),
+        "source": source_info,
         "generated_at": report.get("generated_at"),
         "entities": entities,
         "items": items,
@@ -6445,58 +6463,93 @@ def enforce_offline() -> None:
 
 
 # ==============================================================================
-# 9. 自检
+# 10. CLI
 # ==============================================================================
 
-SAMPLE_CONTRACT = """
-技术开发（委托）合同
+def process_file(path: str, settings: Settings, out_dir: str, formats: set,
+                 quiet: bool = False, include_headers: bool = True,
+                 used_bases: Optional[set] = None,
+                 review_api: Optional[str] = None) -> Dict[str, Any]:
+    doc = load_document(path, include_headers=include_headers)
+    require_pdf_text(doc)
+    engine = DetectorEngine(settings)
+    candidates = engine.scan_document(doc)
+    report = build_report(doc, candidates, settings)
 
-甲方（委托方）：北京星海智能科技有限公司
-统一社会信用代码：91110108MA01KLMNX8
-法定代表人：赵启明
-地址：北京市海淀区中关村南大街 12 号院 3 号楼 1801 室
-联系人：孙丽娟
-联系电话：13812345678
-电子邮箱：zhao.qiming@xinghai-tech.com.cn
-开户银行：中国工商银行股份有限公司北京海淀支行
-银行账号：0200049609200123456
+    os.makedirs(out_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    base = os.path.join(out_dir, stem)
+    if used_bases is not None:
+        # 同名不同格式（合同.docx / 合同.pdf）不能互相覆盖
+        if base in used_bases:
+            base = f"{base}_{doc.file_type}"
+        n = 2
+        while base in used_bases:
+            base = f"{os.path.join(out_dir, stem)}_{doc.file_type}{n}"
+            n += 1
+        used_bases.add(base)
+    written: List[str] = []
 
-乙方（受托方）：深圳市南山区云启软件工作室
-纳税人识别号：440300123456789
-负责人：欧阳博文
-身份证号：440305199001012347
-通讯地址：广东省深圳市南山区科技园南路 88 号 A 座 2203
-手机号：13900139000
-微信号：yunqi_bowen
+    if "json" in formats:
+        p = base + ".sensitive.json"
+        write_json(report, p)
+        written.append(p)
+    if "csv" in formats:
+        p = base + ".sensitive.csv"
+        write_csv(report, p)
+        written.append(p)
 
-第一条 合同金额
-本合同技术开发费用总额为人民币 1,280,000.00 元（大写：壹佰贰拾捌万元整）。
-甲方应于 2026年3月15日 前支付首期款 384,000.00 元至乙方上述账户。
+    full_raw = "\n".join(b.text.rstrip("\n") for b in doc.blocks)
+    if "txt" in formats:
+        p = base + ".annotated.txt"
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(build_annotated_text(doc, candidates, full_raw))
+        written.append(p)
+    if "masked" in formats:
+        p = base + ".masked.txt"
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(build_masked_text(doc, candidates, full_raw))
+        written.append(p)
+    if "html" in formats:
+        p = base + ".review.html"
+        write_review_html(report, doc, p, full_raw, api_base=review_api)
+        written.append(p)
+    if "mapping" in formats:
+        p = base + ".mapping.json"
+        write_mapping(report, p)
+        written.append(p)
+    # 默认导出 selection.json（detector 已经把报告里所有类型打包好，
+    # 让 redactor 在没有 UI 时也能直接使用）
+    sel_p = base + ".selection.json"
+    if not os.path.exists(sel_p) or True:
+        enabled = [it["type"] for it in report["items"]]
+        with open(sel_p, "w", encoding="utf-8") as f:
+            json.dump({
+                "source": os.path.abspath(path),
+                "enabled_types": enabled,
+                "min_confidence": settings.min_confidence,
+                "min_severity": settings.min_severity,
+                "generated_by": f"{report['engine']['name']} v{report['engine']['version']}",
+                "generated_at": report["generated_at"],
+            }, f, ensure_ascii=False, indent=2)
+        written.append(sel_p)
 
-第二条 保密条款
-双方对因履行本合同而知悉的对方商业秘密、个人信息负有保密义务。
-乙方联系人身份证号：11010519491231002X，护照号：E12345678。
-甲方项目经理：陈嘉怡（工号 A20230987），直线电话：0755-86329871。
-
-第三条 争议解决
-因本合同发生争议，双方应协商解决；协商不成的，提交北京仲裁委员会仲裁。
-合同签署日期：2026年2月28日
-"""
-
-
-# 用于「实体编号一致性」自检的样例：人名/机构名多次出现 + 显式简称 + 两类漏检场景
-_ENTITY_SAMPLE = """甲方：北京星海智能科技有限公司（以下简称“星海智能”）
-统一社会信用代码：91110108MA8A2X5K3R
-联系电话：010-8666 2188
-法定代表人：张三
-乙方：上海星光数据服务有限公司
-授权代表：李四
-第一条 星海智能 委托乙方提供数据服务，乙方指派张三 作为项目负责人。
-第二条 张三 应于每季度向星海智能 提交报告，同时抄送李四。
-第三条 本协议由北京星海智能科技有限公司 与上海星光数据服务有限公司 共同签署。
-第四条 星海智能 的联系电话为 010-86662188。
-第五条 甲方法定代表人张三 签字，乙方授权代表李四 签字。
-"""
+    if not quiet:
+        s = report["summary"]
+        print(f"\n■ {os.path.basename(path)}  [{doc.file_type}] {report['source']['chars']} 字")
+        for w in doc.warnings:
+            print(f"   ⚠ {w}")
+        print(f"   候选 {s['candidate_types']} 类 / {s['occurrences']} 处")
+        for c in candidates[:20]:
+            loc = c.occurrences[0].location
+            print(f"   [{c.cid:>2}] {SEVERITY_LABEL.get(c.severity,'?')} "
+                  f"{c.label:<12} {c.confidence:.2f}  ×{c.count}  "
+                  f"{c.value[:28]:<30} → {c.masked[:22]:<24} @ {loc}")
+        if len(candidates) > 20:
+            print(f"   … 其余 {len(candidates)-20} 类见报告文件")
+        for p in written:
+            print(f"   → {p}")
+    return report
 
 
 def selftest(verbose: bool = True) -> int:
@@ -6617,96 +6670,6 @@ def selftest(verbose: bool = True) -> int:
     print("自检全部通过 ✔ 共识别 %d 类 / %d 处候选" % (
         len(cands), sum(c.count for c in cands)))
     return 0
-
-
-# ==============================================================================
-# 10. CLI
-# ==============================================================================
-
-def process_file(path: str, settings: Settings, out_dir: str, formats: set,
-                 quiet: bool = False, include_headers: bool = True,
-                 used_bases: Optional[set] = None,
-                 review_api: Optional[str] = None) -> Dict[str, Any]:
-    doc = load_document(path, include_headers=include_headers)
-    require_pdf_text(doc)
-    engine = DetectorEngine(settings)
-    candidates = engine.scan_document(doc)
-    report = build_report(doc, candidates, settings)
-
-    os.makedirs(out_dir, exist_ok=True)
-    stem = os.path.splitext(os.path.basename(path))[0]
-    base = os.path.join(out_dir, stem)
-    if used_bases is not None:
-        # 同名不同格式（合同.docx / 合同.pdf）不能互相覆盖
-        if base in used_bases:
-            base = f"{base}_{doc.file_type}"
-        n = 2
-        while base in used_bases:
-            base = f"{os.path.join(out_dir, stem)}_{doc.file_type}{n}"
-            n += 1
-        used_bases.add(base)
-    written: List[str] = []
-
-    if "json" in formats:
-        p = base + ".sensitive.json"
-        write_json(report, p)
-        written.append(p)
-    if "csv" in formats:
-        p = base + ".sensitive.csv"
-        write_csv(report, p)
-        written.append(p)
-
-    full_raw = "\n".join(b.text.rstrip("\n") for b in doc.blocks)
-    if "txt" in formats:
-        p = base + ".annotated.txt"
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(build_annotated_text(doc, candidates, full_raw))
-        written.append(p)
-    if "masked" in formats:
-        p = base + ".masked.txt"
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(build_masked_text(doc, candidates, full_raw))
-        written.append(p)
-    if "html" in formats:
-        p = base + ".review.html"
-        write_review_html(report, doc, p, full_raw, api_base=review_api)
-        written.append(p)
-    if "mapping" in formats:
-        p = base + ".mapping.json"
-        write_mapping(report, p)
-        written.append(p)
-    # 默认导出 selection.json（detector 已经把报告里所有类型打包好，
-    # 让 redactor 在没有 UI 时也能直接使用）
-    sel_p = base + ".selection.json"
-    if not os.path.exists(sel_p) or True:
-        enabled = [it["type"] for it in report["items"]]
-        with open(sel_p, "w", encoding="utf-8") as f:
-            json.dump({
-                "source": os.path.abspath(path),
-                "enabled_types": enabled,
-                "min_confidence": settings.min_confidence,
-                "min_severity": settings.min_severity,
-                "generated_by": f"{report['engine']['name']} v{report['engine']['version']}",
-                "generated_at": report["generated_at"],
-            }, f, ensure_ascii=False, indent=2)
-        written.append(sel_p)
-
-    if not quiet:
-        s = report["summary"]
-        print(f"\n■ {os.path.basename(path)}  [{doc.file_type}] {report['source']['chars']} 字")
-        for w in doc.warnings:
-            print(f"   ⚠ {w}")
-        print(f"   候选 {s['candidate_types']} 类 / {s['occurrences']} 处")
-        for c in candidates[:20]:
-            loc = c.occurrences[0].location
-            print(f"   [{c.cid:>2}] {SEVERITY_LABEL.get(c.severity,'?')} "
-                  f"{c.label:<12} {c.confidence:.2f}  ×{c.count}  "
-                  f"{c.value[:28]:<30} → {c.masked[:22]:<24} @ {loc}")
-        if len(candidates) > 20:
-            print(f"   … 其余 {len(candidates)-20} 类见报告文件")
-        for p in written:
-            print(f"   → {p}")
-    return report
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

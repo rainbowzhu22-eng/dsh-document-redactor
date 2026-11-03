@@ -1,7 +1,8 @@
-This adapter packages the frozen R99 offline document-redaction engine from
-whatcccup/cece_legal_skills and the reviewed collaborator return.
+This adapter derives from the pinned R99 offline document-redaction engine from
+whatcccup/cece_legal_skills and the reviewed Windows collaborator return.
 The upstream MIT license and copyright lines are preserved in LICENSE.
-The source archive SHA-256 and per-file hashes are in core/BASELINE.json.
+The original source archive SHA-256 and hashes are preserved in core/BASELINE.json.
+The return provenance and merged-source hashes are in core/RETURN-MERGE.json.
 DeepSeek Harness is the separate host; this package does not redistribute it.
 
 The dynamic community QR controller is adapted from dsh-dpia-workbench

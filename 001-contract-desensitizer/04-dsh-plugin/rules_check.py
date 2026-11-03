@@ -1,4 +1,4 @@
-"""Check an Agent proposal against the unchanged R99 rule parser; never apply it."""
+"""Check an Agent proposal against the embedded rule parser; never apply it."""
 import json
 from pathlib import Path
 import sys
