@@ -1,18 +1,31 @@
-> **本 fork 新增：文书脱敏 DSH 插件 1.3.1（预发布）**
->
-> [插件源码与使用说明](001-contract-desensitizer/04-dsh-plugin/README.md) · [DSH 插件安装包](https://github.com/rainbowzhu22-eng/cece_legal_skills/releases/tag/v1.3.1) · [工具官网](https://xingchendata.com/dsh-document-redactor.html)
->
-> 这是安装在 **DeepSeek Harness 中的插件**，在插件内上传、复核、PDF 框选、导出、历史恢复，并可调用 Agent 改规则。**Windows 待实机验收**。文书在本机处理；首次依赖、群码与云端规则助手会联网，后者提交当前规则全文和手填需求，不自动附带文书或映射。
->
-> 根 `package.json` 是指向 `001-contract-desensitizer/04-dsh-plugin` 的 DSH 安装入口。原离线工具及 SkillHub 文件保持；下方原有“完全离线”等描述仅适用于原工具，不涵盖新增插件的 Agent 与帮助联网功能。上游作者及许可保留，DSH 适配与维护：朱玲凤 / The Data Galaxy。
->
-> 桌面版先通过官方 DSH 的“管理 dsh 命令…”注册其 CLI，并从菜单/托盘正常退出宿主，再执行：
->
-> `dsh plugin --profile desktop add "github:rainbowzhu22-eng/cece_legal_skills#v1.3.1"`
->
-> 优先使用Release的TGZ。1.3.1接入Windows OCR/Word修复，补回PDF规则快照与导出门禁，并修正插件内映射确认；运行时与Mac双端定向实装候选一致。Windows实机与合并版全量回归尚未覆盖。Git标签安装路径尚未单独实装；Web profile将desktop改为web。
+# 文书脱敏工作台 · DSH 插件
 
----
+在 **DeepSeek Harness（DSH）** 中完成 Word/PDF 文书脱敏：识别与复核敏感信息、同案字段一致替换、PDF 框选遮盖、导出脱敏文件，并支持 Word 占位符还原。需要调整识别规则时，可让 DSH Agent 辅助生成方案，查看差异后再应用。
+
+**当前发布：1.3.1（预发布）** · 插件包名：`dsh-document-redactor`
+
+[插件源码与使用说明](001-contract-desensitizer/04-dsh-plugin/README.md) · [DSH 插件安装包](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.3.1) · [工具官网](https://xingchendata.com/dsh-document-redactor.html)
+
+文书解析、复核与脱敏在本机完成。首次准备依赖、帮助群码和云端规则助手会联网；规则助手提交当前规则全文和手填需求，不自动附带文书或映射。**Windows 待实机验收**，导出前仍需人工检查。
+
+桌面版先通过官方 DSH 的“管理 dsh 命令…”注册 CLI，并从菜单或托盘正常退出宿主，再执行：
+
+```sh
+dsh plugin --profile desktop add "github:rainbowzhu22-eng/dsh-document-redactor#v1.3.1"
+```
+
+优先使用 [Release 中的 TGZ 安装包](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.3.1)。Git 标签安装路径尚未单独实装；Web profile 将 `desktop` 改为 `web`。1.3.1 接入 Windows OCR/Word 修复，补回 PDF 规则快照与导出门禁，并修正插件内映射确认；Windows 实机与合并版全量回归尚未覆盖。
+
+根 `package.json` 指向 `001-contract-desensitizer/04-dsh-plugin`，作为 DSH 安装入口。
+
+## 来源与致谢
+
+本项目 fork 自 [Cece 的 cece_legal_skills](https://github.com/whatcccup/cece_legal_skills)，保留上游作者署名、MIT 许可、原离线工具与 SkillHub 文件。DSH 适配与维护：朱玲凤 / The Data Galaxy。
+
+下方保留上游原工具说明，其中“完全离线”等表述适用于原工具；插件的联网范围见上文。
+
+<details>
+<summary>上游 Cece 离线工具说明</summary>
 
 # cece_legal_skills
 
@@ -158,3 +171,5 @@ skillhub publish 001-contract-desensitizer/03-skillhub --changelog "..."
 ## 许可
 
 [MIT](LICENSE) © 2026 whatcccup
+
+</details>
