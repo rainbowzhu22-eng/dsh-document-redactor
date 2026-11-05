@@ -4,8 +4,8 @@
   "baseline_manifest_sha256": "3c2708d865bb2aaed69a799811f9c0bdd43d1eec7c4c655f4ae27af79b361e83",
   "return_zip_sha256": "aa40bebaa418db68be5cf459bdf5792ef97830de6bd1c847475516f7cb40d191",
   "return_tgz_sha256": "622863226ba204c08e28c20a31213ae36ee5499d408342009972df711138de65",
-  "local_candidate_version": "1.3.2",
-  "source_status": "unpublished source; six targeted checks passed; installation pending",
+  "local_candidate_version": "1.4.0",
+  "source_status": "1.4.0 local candidate: real-parser/OCR integration, one 68-test plugin regression, isolated network recovery and Mac Web/Desktop acceptance passed; Windows new paths and user original PDF pending",
   "preserved": [
     "original R99 provenance, rule template, license and engine selftest entrypoints",
     "confirmed DSH interface and amount/date policy selection"
@@ -16,30 +16,35 @@
     "only explicit keep/type actions satisfy candidate disposition; undo/reset restores pending",
     "Mac OCR helper mode 0755 retained; native recognition executed successfully",
     "1.3.2: retain XML/revision/comment targets for manually added literals, preserving hash guards.",
-    "1.3.2: send region id for PDF box changes; retain update errors after refresh."
+    "1.3.2: send region id for PDF box changes; retain update errors after refresh.",
+    "1.4.0 REDACT-ITER-014/015@1: recoverable dependency preparation, fixed selectable sources, progress and Windows OCR validation; explicit UTF-8 requirements.",
+    "1.4.0 REDACT-ITER-016@1: tolerate unreadable source annotations with unknown count; preserve strict pixel-output checks.",
+    "1.4.0 REDACT-ITER-002@1: discard proposals and confirm history-based rule rollback with integrity and concurrency guards.",
+    "1.4.0 REDACT-ITER-001@1: all cached OCR lines, page localization and separate optional review metadata.",
+    "1.4.0 REDACT-ITER-002 integration: classify custom rule ids against immutable built-ins so repeated TXT/DOCX exports reload their regex."
   ],
   "files": {
     "SKILL.md": "880100f70a0662280e18a609d3486c70c37a5e6b4fdf67b2a38f4954d7ea98bd",
     "references/使用说明.md": "a114c759bce43aef55a70ea782791ca95e03703af5f92eaf0ab7721bd89f9bcf",
     "references/第三方组件与许可声明.md": "cc98946e14db9836226e774efce09ddda80c7abb25cdaa9de8a13dc99776f1c8",
     "references/脱敏规则清单.md": "d1c76ec438efefab119896b6c5bc6b604060175a0f3431984c8463cba0760cd3",
-    "scripts/contract_app_server.py": "da9428859e2e0b821b26a402f567db4cf3194fc146492ebd1cdce2f1b2f706af",
+    "scripts/contract_app_server.py": "b0f159e0326d2d7d3ea355c4582db5d69a06f692aafb120cb8173fe899c42396",
     "scripts/contract_app_ui.py": "ba299edc6ca0dea4b77cf9cc5db81b825ba4cfdc1f25425bebb010ccd84fc33a",
     "scripts/contract_docx_comments.py": "2f3c17fdeaa136bf1f803de5f57334eb4bc93dcf3c3f820eb82b8f3675f45f32",
     "scripts/contract_docx_revisions.py": "49141f615439c31671f4144a64529135fd60319745c1769a805e6a032bfa2b92",
     "scripts/contract_pdf_ocr_worker.py": "1c58157eeabba24d76abfe0ad3de3c9cded18c76a41efbdf67ab891018e12bef",
-    "scripts/contract_pdf_project.py": "49fc0b7e28bf5676349104c7ed98bb440064c262f3c708fcbc06f5e0244091d4",
-    "scripts/contract_pdf_ui.py": "dc13486c140e37a17ba2abd0a0fada6e426667e3f7f1176876f1bed97ce22559",
+    "scripts/contract_pdf_project.py": "91e4112df91168571e63f676802872fab6277e89f5ed88a257d30c8d0056d8bb",
+    "scripts/contract_pdf_ui.py": "b2c5f8cb795d71d90c619b600fdd9f862ceb553b757e8738e36c0542f8bb0d7e",
     "scripts/contract_pdf_win_ocr.py": "3d5b4fcd19fbfed291d9b3db4e961f9b4f28289ced770e1d24d83637386d8f83",
     "scripts/contract_redaction_policy.py": "505f7619ac819918055cf65d683604a6138bd3e5b1e860502fd9bfbb3580f57d",
     "scripts/contract_redactor.py": "29e67d5f485347f5f3350b43767eee78a1dca9a5e0bbe0620d4324a5662818f8",
     "scripts/contract_review_ext.py": "26c933ca7dd4bbc179c7defdc8796e3ea6f2134ac5a211a3c186cead29c580e0",
-    "scripts/contract_sensitive_detector.py": "8c3e14a5789c25effba23b1e2fe7a154a5c65d5f24a41d911db64feaf2d5e189",
+    "scripts/contract_sensitive_detector.py": "dc055db469463c65aa7b03f62511b1ace71a95abd64e3d9bb4cd0ea1b1b1b48f",
     "scripts/contract_ui_notices.py": "a2ea94207891cc8449b24eb75027b9a8899a38b062ba1f2f606cf47af3832e5d",
     "scripts/launcher/README.md": "be24deca73ed71da7eea3133a394ecd921b24d0d4e2c79e43f9ac0e11743b209",
     "scripts/launcher/start.py": "bc20f86c3c8e3758eb9ab0d71e280ad62eda7f88e65f9300545d233cd78d9f48",
     "scripts/pdf_vision_ocr": "85a495d25ba90f1a9c5cddd9e40d29ee3ef6e71b3389c2bc1ebb15c1146495aa",
-    "scripts/requirements.txt": "33389bdaf7bcd9b95978c4c80841faf7ac02b4e800689aa44c6276f139ccc5b3"
+    "scripts/requirements.txt": "b84a52be8309a91bb672dc2f44ff1b2e85e15c622b8d629df8c8cc9e13cc8441"
   },
   "adapter_fix": "client.js: allow native mapping confirmation dialogs in the local processing iframe"
 }

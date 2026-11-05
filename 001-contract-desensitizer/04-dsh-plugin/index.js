@@ -27,9 +27,11 @@ export function makeRoute(service, rules) {
       const payload = body?.payload;
       const action = payload?.action;
       const validPayload = payload && (
-        ['status', 'start', 'stop', 'rules-status', 'rules-cancel'].includes(action) && Object.keys(payload).join(',') === 'action' ||
+        ['status', 'start', 'stop', 'rules-status', 'rules-cancel', 'rules-discard'].includes(action) && Object.keys(payload).join(',') === 'action' ||
+        action === 'rules-rollback-preview' && Object.keys(payload).sort().join(',') === 'action,id' && typeof payload.id === 'string' && /^[0-9a-f-]{36}$/.test(payload.id) ||
+        action === 'start' && Object.keys(payload).sort().join(',') === 'action,source' && ['default','pypi','tuna'].includes(payload.source) ||
         action === 'rules-propose' && Object.keys(payload).sort().join(',') === 'action,request' && typeof payload.request === 'string' && payload.request.length <= 3000 ||
-        action === 'rules-apply' && Object.keys(payload).sort().join(',') === 'action,confirmedDeleted,id' && typeof payload.id === 'string' && /^[0-9a-f-]{36}$/.test(payload.id) && Array.isArray(payload.confirmedDeleted) && payload.confirmedDeleted.length <= 100 && payload.confirmedDeleted.every(x => typeof x === 'string' && /^[A-Z0-9_]{1,80}$/.test(x)));
+        action === 'rules-apply' && ['action,confirmedDeleted,id','action,confirmedDeleted,confirmedRollback,id'].includes(Object.keys(payload).sort().join(',')) && (payload.confirmedRollback === undefined || typeof payload.confirmedRollback === 'boolean') && typeof payload.id === 'string' && /^[0-9a-f-]{36}$/.test(payload.id) && Array.isArray(payload.confirmedDeleted) && payload.confirmedDeleted.length <= 100 && payload.confirmedDeleted.every(x => typeof x === 'string' && /^[A-Z0-9_]{1,80}$/.test(x)));
       if (body?.type !== 'client-request' || body.method !== 'document.redactor' ||
           typeof body.rpcId !== 'string' || body.rpcId.length > 200 ||
           !validPayload) {
@@ -41,11 +43,11 @@ export function makeRoute(service, rules) {
         if (action.startsWith('rules-')) {
           if (!rules || service.snapshot().stage !== 'ready') throw new Error('NOT_READY');
           await rules.ready;
-          value = action === 'rules-status' ? rules.snapshot() : action === 'rules-propose' ? await rules.propose(payload.request) : action === 'rules-cancel' ? rules.cancel() : await rules.apply(payload.id, payload.confirmedDeleted);
-        } else value = action === 'status' ? service.snapshot() : action === 'start' ? service.start() : await service.stop();
+          value = action === 'rules-status' ? await rules.status() : action === 'rules-propose' ? await rules.propose(payload.request) : action === 'rules-cancel' ? rules.cancel() : action === 'rules-discard' ? await rules.discard() : action === 'rules-rollback-preview' ? await rules.previewRollback(payload.id) : await rules.apply(payload.id, payload.confirmedDeleted, payload.confirmedRollback);
+        } else value = action === 'status' ? service.snapshot() : action === 'start' ? service.start(payload.source === undefined ? {} : { source: payload.source }) : await service.stop();
         result = { ok: true, value };
       } catch (cause) {
-        const safe = ['INVALID_REQUEST','NO_PLAN','RULES_CHANGED','DELETION_CONFIRMATION','INVALID_RULES','CHECK_FAILED','RULES_UNAVAILABLE'].includes(cause.code);
+        const safe = ['INVALID_REQUEST','NO_PLAN','RULES_CHANGED','RULES_BUSY','DELETION_CONFIRMATION','ROLLBACK_CONFIRMATION','INVALID_RULES','CHECK_FAILED','RULES_UNAVAILABLE'].includes(cause.code);
         result = { ok: false, error: { code: safe ? 'redactor/' + cause.code : 'redactor/CONTROL_FAILED', message: safe ? cause.message : '本机工具操作失败，请先打开工具后重试。', details: {} } };
       }
       return Response.json({ type: 'server-response', rpcId: body.rpcId, result },

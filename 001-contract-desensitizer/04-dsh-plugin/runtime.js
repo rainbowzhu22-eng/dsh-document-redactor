@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdir, open, access } from 'node:fs/promises';
+import { mkdir, open, access, readFile, writeFile, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,18 +32,24 @@ export function dataRoot(env = process.env) {
 
 function command(executable, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const { signal, timeout, ...spawnOptions } = options;
+    const { signal, timeout, onLine, ...spawnOptions } = options;
     if (signal?.aborted) { reject(new Error('ABORTED')); return; }
     const child = spawn(executable, args, { shell: false, windowsHide: true,
       detached: process.platform !== 'win32', ...spawnOptions });
-    const cancel = () => terminateOwned(child);
+    let forceTimer, timedOut = false;
+    const cancel = () => {
+      terminateOwned(child);
+      forceTimer ??= setTimeout(() => terminateOwned(child, true), 4000);
+    };
     signal?.addEventListener('abort', cancel, { once: true });
-    const timer = timeout && setTimeout(cancel, timeout);
-    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); };
+    const timer = timeout && setTimeout(() => { timedOut = true; cancel(); }, timeout);
+    const lines = onLine && child.stdout && createInterface({ input: child.stdout });
+    lines?.on('line', line => { if (line.length <= 512) onLine(line); });
+    const cleanup = () => { clearTimeout(timer); clearTimeout(forceTimer); lines?.close(); signal?.removeEventListener('abort', cancel); };
     let stdout = '';
     child.stdout?.on('data', chunk => { if (stdout.length < 8192) stdout += chunk.toString(); });
     child.once('error', error => { cleanup(); reject(error); });
-    child.once('exit', code => { cleanup(); code === 0 && !signal?.aborted ? resolve(stdout.trim()) : reject(new Error('COMMAND_FAILED')); });
+    child.once('close', code => { cleanup(); code === 0 && !signal?.aborted && !timedOut ? resolve(stdout.trim()) : reject(Object.assign(new Error('COMMAND_FAILED'), { code: timedOut ? 'PREPARATION_TIMEOUT' : 'COMMAND_FAILED' })); });
   });
 }
 
@@ -73,14 +79,27 @@ export async function findPython(signal, env = process.env) {
 export class LocalRuntime {
   constructor(root = dataRoot()) { this.root = root; }
 
-  async prepare(signal) {
+  async prepare(signal, onProgress = () => {}, options = {}) {
     await access(join(PACKAGE, 'core', 'scripts', 'contract_app_server.py'));
     await mkdir(this.root, { recursive: true, mode: 0o700 });
+    let source = options.source;
+    if (source === undefined) {
+      try { source = JSON.parse(await readFile(join(this.root, 'environment-settings.json'), 'utf8')).source; }
+      catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
+    }
+    source ??= 'default';
+    if (!['default', 'pypi', 'tuna'].includes(source)) throw new Error('INVALID_DOWNLOAD_SOURCE');
+    const settings = join(this.root, 'environment-settings.json');
+    await writeFile(settings + '.tmp', JSON.stringify({ source }), { mode: 0o600 });
+    await rename(settings + '.tmp', settings);
     const log = await open(join(this.root, 'environment.log'), 'a', 0o600);
     try {
       const python = await findPython(signal);
-      await command(python, [join(PACKAGE, 'runtime.py'), 'prepare', '--data-root', this.root],
-        { signal, timeout: 240000, stdio: ['ignore', log.fd, log.fd] });
+      onProgress('checking');
+      await command(python, [join(PACKAGE, 'runtime.py'), 'prepare', '--data-root', this.root, '--source', source],
+        { signal, timeout: 1200000, stdio: ['ignore', 'pipe', log.fd], onLine: line => {
+          try { const event = JSON.parse(line); if (event.type === 'preparation' && ['checking','environment','installing','validating','ready'].includes(event.stage)) onProgress(event.stage); } catch { /* Only fixed progress stages cross the control boundary. */ }
+        } });
     } finally { await log.close(); }
     return join(this.root, 'environment', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
   }

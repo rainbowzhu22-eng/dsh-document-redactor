@@ -6390,7 +6390,9 @@ def load_rules_md(path: str) -> List[RegexSpec]:
     for row in parse.rows:
         kw = _apply_row_kwargs(row)
         type_id = row.type_id
-        if type_id in TYPE_META:
+        # A prior export may have registered this custom id in TYPE_META.
+        # It still needs its regex on every reload and after a rule rollback.
+        if type_id in BUILTIN_TYPE_META:
             TYPE_META[type_id] = dataclasses.replace(TYPE_META[type_id], **kw)
         else:
             pattern = row.cells[8] if len(row.cells) > 8 else ""

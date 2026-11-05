@@ -2,6 +2,8 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
   const exports = {}, React = require('react'), h = React.createElement;
   const labels = { idle: '尚未打开', preparing: '正在准备本机环境…', starting: '正在启动…', ready: '本机运行中', stopping: '正在停止…', error: '打开未完成' };
   const errors = { STOP_FAILED: '停止未完成，请重试停止；已保存的项目仍保留。', PYTHON_NOT_FOUND: '未找到 Python 3.9 或更新版本。请安装 Python 后重试。', PREPARATION_FAILED: '环境准备失败，请检查网络和本机安装权限后重试。', START_FAILED: '本机服务未能启动，请重试。', SERVICE_STOPPED: '本机服务已停止，可重新打开，已保存的项目仍保留。' };
+  errors.PREPARATION_TIMEOUT = '准备已达到20分钟上限。已保留安装进度和缓存；可切换下载源后重试，或查看数据目录中的 environment.log。';
+  const preparationLabels = { checking:'检查已有环境', environment:'准备 Python 环境', installing:'下载并安装依赖（慢网可能需要数分钟）', validating:'检查解析与 OCR 能力', ready:'环境检查完成' };
   const css = `
   .redactor-app{--rd-bg:#eef1f8;--rd-surface:#fff;--rd-surface-soft:#f7f9fd;--rd-line:#e2e7f1;--rd-ink:#0d1626;--rd-ink-2:#39465a;--rd-sub:#6b7a90;--rd-accent:#3355ff;--rd-accent-line:#c9d5ff;height:100%;display:flex;flex-direction:column;min-width:0;background:var(--rd-bg);color:var(--rd-ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,"Segoe UI",sans-serif;font-size:14.5px;line-height:1.72;-webkit-font-smoothing:antialiased}
   .redactor-header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 24px;padding-inline-start:max(24px,calc(var(--dsh-frame-leading-clearance,0px) + 16px));border-bottom:1px solid var(--rd-line);background:rgba(255,255,255,.92);flex:none}
@@ -129,6 +131,7 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
   function Workbench({ rpc, controls }) {
     const [state, setState] = React.useState({ stage: 'idle' });
     const [error, setError] = React.useState('');
+    const [downloadSource, setDownloadSource] = React.useState('saved');
     const [drawer, setDrawer] = React.useState(false);
     const [help, setHelp] = React.useState(false);
     const [requestText, setRequestText] = React.useState('');
@@ -136,9 +139,10 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
     const [ruleError, setRuleError] = React.useState('');
     const [deletionConfirmed, setDeletionConfirmed] = React.useState(false);
     const [applying, setApplying] = React.useState(false);
+    const [rollbackConfirmed, setRollbackConfirmed] = React.useState(false);
     const frame = React.useRef(null), mounted = React.useRef(false);
-    const request = React.useCallback(async action => {
-      try { const value = await rpc({ action }); if (mounted.current) { setState(value); setError(''); } }
+    const request = React.useCallback(async (action, options = {}) => {
+      try { const value = await rpc({ action, ...options }); if (mounted.current) { setState(value); setError(''); } }
       catch (cause) { if (mounted.current) setError(cause.message || '无法连接插件，请刷新DSH后重试。'); }
     }, [rpc]);
     React.useEffect(() => {
@@ -169,14 +173,26 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
       return () => { live = false; clearInterval(timer); };
     }, [drawer, state.stage, rpc]);
     const generate = async () => {
-      setRuleError(''); setDeletionConfirmed(false);
+      setRuleError(''); setDeletionConfirmed(false); setRollbackConfirmed(false);
       try { setRules(await rpc({ action:'rules-propose', request:requestText })); }
       catch (cause) { setRuleError(cause.message); }
+    };
+    const discardRules = async () => {
+      setApplying(true); setRuleError('');
+      try { setRules(await rpc({action:'rules-discard'})); setDeletionConfirmed(false); setRollbackConfirmed(false); }
+      catch(cause) { setRuleError(cause.message); }
+      finally { setApplying(false); }
+    };
+    const previewRollback = async id => {
+      setApplying(true); setRuleError(''); setDeletionConfirmed(false); setRollbackConfirmed(false);
+      try { setRules(await rpc({action:'rules-rollback-preview',id})); }
+      catch(cause) { setRuleError(cause.message); }
+      finally { setApplying(false); }
     };
     const applyRules = async () => {
       setApplying(true); setRuleError('');
       try {
-        const value = await rpc({action:'rules-apply',id:rules.id,confirmedDeleted:deletionConfirmed ? rules.deleted || [] : []});
+        const value = await rpc({action:'rules-apply',id:rules.id,confirmedDeleted:deletionConfirmed ? rules.deleted || [] : [],confirmedRollback:rules.kind==='rollback' && rollbackConfirmed});
         setRules(value);
         frame.current?.contentWindow.postMessage({ type:'dsh-redactor:rules-applied' }, new URL(state.url).origin);
       } catch (cause) { setRuleError(cause.message); }
@@ -193,14 +209,18 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
         state.stage === 'ready' && btn('历史记录',()=>{frame.current.src=state.url+'history';setDrawer(false);}),
         state.stage === 'ready' && btn('识别规则',()=>setDrawer(true)),
         btn('帮助与反馈',()=>{setDrawer(false);setHelp(true);}),
-        !['ready','preparing','starting','stopping'].includes(state.stage) && btn(state.error === 'STOP_FAILED'?'重试停止':state.stage === 'error'?'重试打开':'打开脱敏工具',()=>request(state.error === 'STOP_FAILED'?'stop':'start'),false,true),
+        !['ready','preparing','starting','stopping'].includes(state.stage) && btn(state.error === 'STOP_FAILED'?'重试停止':state.stage === 'error'?'重试打开':'打开脱敏工具',()=>request(state.error === 'STOP_FAILED'?'stop':'start',downloadSource === 'saved' ? {} : {source:downloadSource}),false,true),
         ['preparing','starting'].includes(state.stage) && btn('取消准备',()=>request('stop')),
         state.stage === 'ready' && h('details',{className:'redactor-more'},h('summary',null,'更多'),h('div',{className:'redactor-menu'},
           btn('停止本机工具',()=>request('stop'))))),
       (error || state.error) && h('p',{role:'alert',className:'redactor-alert'},error || errors[state.error] || '操作未完成，请重试。'),
       h('div',{className:'redactor-body'},
         state.stage === 'ready' ? h('iframe',{ref:frame,src:state.url,title:'本机文书脱敏与复核',referrerPolicy:'no-referrer',sandbox:'allow-scripts allow-same-origin allow-downloads allow-forms allow-popups allow-modals'}) :
-          h('div',{className:'redactor-start'},h('h1',null,'上传文书，确认后再导出'),h('p',null,'1 上传文书　→　2 复核敏感内容　→　3 导出脱敏文件'),h('p',null,'文书在本机处理。支持Word、PDF、TXT、Markdown。自动识别可能漏项，外发前请核对最终文件。'),h('p',null,busy?'环境准备期间可留在此页等待。':'点击右上角“打开脱敏工具”开始。首次准备依赖需要联网；停止工具不会删除已保存的项目。'),h(CommunityContact)),
+          h('div',{className:'redactor-start'},h('h1',null,'上传文书，确认后再导出'),h('p',null,'1 上传文书　→　2 复核敏感内容　→　3 导出脱敏文件'),h('p',null,'文书在本机处理。支持Word、PDF、TXT、Markdown。自动识别可能漏项，外发前请核对最终文件。'),
+            h('label',null,'依赖下载源　',h('select',{value:downloadSource,disabled:busy,onChange:event=>setDownloadSource(event.target.value),'aria-label':'依赖下载源'},
+              h('option',{value:'saved'},'沿用上次设置（首次使用系统默认）'),h('option',{value:'default'},'系统默认源'),h('option',{value:'pypi'},'PyPI 官方源'),h('option',{value:'tuna'},'清华 TUNA 镜像'))),
+            h('p',null,'仅首次准备或修复依赖时使用；不会修改系统 pip 设置，也不向下载源发送文书。'),
+            h('p',{role:'status'},busy?(preparationLabels[state.preparation] || labels[state.stage]):'点击右上角“打开脱敏工具”开始。准备失败可切换下载源重试，已安装依赖与下载缓存会保留。'),h(CommunityContact)),
         drawer && state.stage === 'ready' && h('aside',{className:'redactor-drawer','aria-label':'Agent识别规则助手'},
           h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}},h('h3',null,'调整识别规则'),btn('收起',()=>setDrawer(false))),
           h('p',null,'本份文书只漏一处，可在复核页直接补字段或框选。需要后续文书也自动识别时，再修改通用规则。'),
@@ -211,12 +231,18 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
             btn(rules.stage === 'preview'?'重新生成方案':'让 Agent 生成修改方案',generate,!requestText.trim()||applying,true),
           (ruleError || rules.message && ['error','cancelled'].includes(rules.stage)) && h('p',{role:'alert',style:{color:'#a32626'}},ruleError || rules.message),
           rules.stage === 'preview' && h('div',null,
-            h('h4',null,'查看改动'),h('p',null,rules.summary),
+            h('h4',null,rules.kind === 'rollback'?'核对回退差异':'查看改动'),h('p',null,rules.summary),
             ...rules.edits.map((edit,i)=>h('div',{className:'redactor-diff',key:i},h('del',null,h('pre',null,'修改前\n'+edit.before)),h('ins',null,h('pre',null,'修改后\n'+edit.after)))),
             rules.deleted?.length > 0 && h('label',null,h('input',{type:'checkbox',checked:deletionConfirmed,onChange:event=>setDeletionConfirmed(event.target.checked)}),'确认删除这些自定义规则：'+rules.deleted.join('、')),
+            rules.kind === 'rollback' && h('label',null,h('input',{type:'checkbox',checked:rollbackConfirmed,onChange:event=>setRollbackConfirmed(event.target.checked)}),'确认恢复到所选记录变更前的完整规则，撤销此后的修改'),
             h('p',null,'已通过规则格式校验。应用后会保存原规则备份；新规则对后续上传生效，当前文书需要重新上传识别。'),
-            btn(applying?'正在应用…':'应用规则',applyRules,applying || rules.deleted?.length > 0 && !deletionConfirmed,true)),
-          rules.stage === 'applied' && h('div',{className:'redactor-success',role:'status'},h('strong',null,'规则已应用'),h('p',null,rules.message),btn('去重新上传识别',()=>{frame.current.src=state.url;setDrawer(false);},false,true))))
+            btn(applying?'正在应用…':rules.kind==='rollback'?'确认回退规则':'应用规则',applyRules,applying || rules.deleted?.length > 0 && !deletionConfirmed || rules.kind==='rollback' && !rollbackConfirmed,true),
+            btn('放弃方案',discardRules,applying)),
+          rules.stage === 'idle' && rules.message && h('p',{role:'status'},rules.message),
+          rules.stage === 'applied' && h('div',{className:'redactor-success',role:'status'},h('strong',null,'规则已应用'),h('p',null,rules.message),btn('去重新上传识别',()=>{frame.current.src=state.url;setDrawer(false);},false,true)),
+          h('details',null,h('summary',null,'规则应用记录与回退'),h('p',null,'最近100条记录。回退前先核对差异；“恢复最近有效配置”用于配置错误恢复，与撤销一次业务改动不同。历史版本仅有备份但无应用记录的，不会伪造为可回退记录。'),
+            !(rules.history||[]).length && h('p',null,'暂无可回退的应用记录。'),
+            ...(rules.history||[]).map(record=>h('div',{key:record.id,className:'redactor-diff'},h('p',null,(record.kind==='rollback'?'回退 · ':'应用 · ')+new Date(record.createdAt).toLocaleString()+' · '+record.summary),btn('查看变更前版本',()=>previewRollback(record.id),applying||rules.stage==='generating'))))))
       );
   }
   exports.inject = ['slots','connection','layout'];

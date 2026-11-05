@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { readFile, writeFile, rename, mkdir, lstat, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, writeFile, rename, mkdir, lstat, mkdtemp, rm, open } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -98,6 +98,7 @@ export class RulesController {
     this.root = root; this.generate = generate; this.validate = validate;
     this.state = { stage: 'idle' }; this.job = null; this.applying = false;
     this.saved = join(root, 'rule-proposal.json');
+    this.historyPath = join(root, 'rules', 'agent-history.json');
     this.ready = this.restore().catch(() => {});
   }
   async restore() {
@@ -107,11 +108,105 @@ export class RulesController {
     if (state.stage !== 'preview' || !/^[0-9a-f-]{36}$/.test(state.id)) return;
     const base = await this.read();
     if (base.sha !== state.baseSha) return;
-    const candidate = applyEdits(base.text, state.edits);
+    const candidate = state.kind === 'rollback' ? (await this.rollbackTarget(state.sourceRecordId)).text : applyEdits(base.text, state.edits);
+    if (state.kind === 'rollback' && sha(candidate) !== state.targetSha) return;
     this.job = { id: state.id, base, candidate, abort: new AbortController() };
     this.state = state;
   }
   snapshot() { return structuredClone(this.state); }
+  async records() {
+    try {
+      const info = await lstat(this.historyPath);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 262144) throw new Error('invalid history');
+      const records = JSON.parse(await readFile(this.historyPath, 'utf8'));
+      if (!Array.isArray(records) || records.length > 100 || records.some(r =>
+        !/^[0-9a-f-]{36}$/.test(r.id) || !/^[0-9a-f]{64}$/.test(r.beforeSha) ||
+        !/^[0-9a-f]{64}$/.test(r.afterSha) || typeof r.summary !== 'string' ||
+        r.summary.length > 300 || !['prepared','applied'].includes(r.status))) throw new Error('invalid history');
+      return records;
+    } catch (cause) {
+      if (cause.code === 'ENOENT') return [];
+      throw error('RULES_UNAVAILABLE', '规则应用记录不可读，未覆盖现有记录或规则。');
+    }
+  }
+  async status() {
+    await this.ready;
+    const current = await this.read();
+    const history = (await this.records()).filter(r => r.status === 'applied' || r.afterSha === current.sha)
+      .reverse().map(r => ({ id:r.id, createdAt:r.createdAt, summary:r.summary, kind:r.kind || 'apply' }));
+    return { ...this.snapshot(), history };
+  }
+  async rollbackTarget(id) {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw error('INVALID_REQUEST', '应用记录无效。');
+    const record = (await this.records()).find(r => r.id === id);
+    const current = await this.read();
+    if (!record || record.status !== 'applied' && record.afterSha !== current.sha) throw error('NO_PLAN', '没有可回退的应用记录。');
+    const backup = join(this.root, 'rules', 'Backups', 'agent-' + id + '.md');
+    let text;
+    try {
+      const info = await lstat(backup);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 131072) throw new Error('invalid backup');
+      text = await readFile(backup, 'utf8');
+    } catch { throw error('RULES_UNAVAILABLE', '变更前规则备份不可用，当前规则保持原样。'); }
+    if (sha(text) !== record.beforeSha) throw error('RULES_UNAVAILABLE', '备份校验失败，当前规则保持原样。');
+    return { text, record };
+  }
+  async previewRollback(id) {
+    await this.ready;
+    if (this.applying || this.state.stage === 'generating') throw error('RULES_BUSY', '请先完成或取消当前操作。');
+    const base = await this.read(), target = await this.rollbackTarget(id);
+    if (base.sha === sha(target.text)) throw error('NO_PLAN', '当前规则已经是该记录变更前的版本。');
+    const check = await this.validate(target.text);
+    if (this.applying || this.state.stage === 'generating') throw error('RULES_BUSY', '规则操作进行中，请重试。');
+    const planId = randomUUID();
+    this.job = { id:planId, base, candidate:target.text, abort:new AbortController() };
+    this.state = { stage:'preview', kind:'rollback', id:planId, sourceRecordId:id,
+      baseSha:base.sha, targetSha:sha(target.text), deleted:check.deleted || [],
+      summary:'回到“' + target.record.summary + '”变更前的完整规则；该记录之后的修改也会撤销，请核对差异。',
+      edits:[{before:base.text, after:target.text}] };
+    await this.saveJSON(this.saved, this.state);
+    return this.status();
+  }
+  async discard() {
+    await this.ready;
+    if (this.applying) throw error('RULES_BUSY', '规则正在应用，请稍后操作。');
+    this.job?.abort.abort();
+    this.job = null;
+    await this.pending;
+    await rm(this.saved, { force:true });
+    this.state = {stage:'idle', message:'已放弃方案，活动规则保持原样。'};
+    return this.status();
+  }
+  async saveJSON(path, value) {
+    const tmp = path + '.' + randomUUID() + '.tmp';
+    try { await writeFile(tmp, JSON.stringify(value), {mode:0o600}); await rename(tmp, path); }
+    finally { await rm(tmp, {force:true}); }
+  }
+  async writeLock() {
+    const path = join(this.root, 'rules', 'agent-write.lock');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const handle = await open(path, 'wx', 0o600);
+        try { await handle.writeFile(JSON.stringify({pid:process.pid})); }
+        catch (cause) { await handle.close(); await rm(path, {force:true}); throw cause; }
+        return async () => { await handle.close(); await rm(path, {force:true}); };
+      } catch (cause) {
+        if (cause.code !== 'EEXIST') throw cause;
+        try {
+          const info = await lstat(path);
+          if (!info.isFile() || info.isSymbolicLink() || info.size > 128) break;
+          const raw = await readFile(path, 'utf8'), owner = JSON.parse(raw);
+          if (!Number.isInteger(owner.pid) || owner.pid < 1) break;
+          try { process.kill(owner.pid, 0); break; }
+          catch (check) {
+            if (check.code !== 'ESRCH') break;
+            if (await readFile(path, 'utf8') === raw) await rm(path);
+          }
+        } catch { break; }
+      }
+    }
+    throw error('RULES_BUSY', '另一项规则操作尚未完成，请稍后重试。');
+  }
   async read() {
     const path = join(this.root, 'rules', '脱敏规则清单.md');
     const info = await lstat(path);
@@ -123,7 +218,7 @@ export class RulesController {
     if (this.state.stage === 'generating' || this.applying) return this.snapshot();
     if (typeof request !== 'string' || !request.trim() || request.length > 3000) throw error('INVALID_REQUEST', '请用3000字以内描述希望识别的内容。');
     const base = await this.read();
-    if (this.state.stage === 'generating') return this.snapshot();
+    if (this.state.stage === 'generating' || this.applying) return this.snapshot();
     const id = randomUUID(), abort = new AbortController();
     const job = this.job = { id, abort, base };
     this.state = { stage: 'generating', id };
@@ -150,12 +245,15 @@ export class RulesController {
     })();
     return this.snapshot();
   }
-  async apply(id, confirmedDeleted = []) {
+  async apply(id, confirmedDeleted = [], confirmedRollback = false) {
     await this.ready;
     if (this.state.stage === 'applied' && this.state.id === id) return this.snapshot();
     if (this.applying || this.state.stage !== 'preview' || this.state.id !== id) throw error('NO_PLAN', '没有可应用的规则方案。');
+    if (this.state.kind === 'rollback' && confirmedRollback !== true) throw error('ROLLBACK_CONFIRMATION', '请核对差异并明确确认回退到完整的历史规则。');
     this.applying = true;
+    let unlock;
     try {
+      unlock = await this.writeLock();
       const job = this.job, current = await this.read();
       if (current.sha !== job.base.sha) throw error('RULES_CHANGED', '规则已被其他操作修改，请重新生成方案。');
       const check = await this.validate(job.candidate);
@@ -163,6 +261,13 @@ export class RulesController {
       const backup = join(this.root, 'rules', 'Backups', 'agent-' + id + '.md');
       await mkdir(dirname(backup), { recursive: true, mode: 0o700 });
       await writeFile(backup, current.text, { flag: 'wx', mode: 0o600 }).catch(cause => { if (cause.code !== 'EEXIST') throw cause; });
+      if (await readFile(backup, 'utf8') !== current.text) throw error('RULES_UNAVAILABLE', '备份校验失败，原规则保持原样。');
+      let records = (await this.records()).map(r => r.status === 'prepared' && r.afterSha === current.sha ? {...r,status:'applied'} : r);
+      const record = { id, createdAt:new Date().toISOString(), kind:this.state.kind || 'apply',
+        summary:String(this.state.summary || '调整识别规则').slice(0,300), beforeSha:current.sha,
+        afterSha:sha(job.candidate), status:'prepared' };
+      records = [...records.filter(r => r.id !== id), record].slice(-100);
+      await this.saveJSON(this.historyPath, records);
       const path = current.path + '.' + id + '.tmp';
       try {
         await writeFile(path, job.candidate, { mode: 0o600 });
@@ -171,9 +276,11 @@ export class RulesController {
       } finally { await rm(path, { force: true }); }
       this.state = { stage: 'applied', id, sha: sha(job.candidate), summary: this.state.summary,
         message: '规则已应用。新上传文书会使用新规则；当前文书需重新上传识别，已导出的文件不会自动改变。' };
-      await rm(this.saved, { force: true });
-      return this.snapshot();
-    } finally { this.applying = false; }
+      try { await this.saveJSON(this.historyPath, records.map(r => r.id === id ? {...r,status:'applied'} : r)); }
+      catch { this.state.message += '应用记录已预存，重开后会按规则校验值恢复。'; }
+      await rm(this.saved, { force: true }).catch(() => {});
+      return this.status();
+    } finally { try { if (unlock) await unlock(); } finally { this.applying = false; } }
   }
   cancel() { this.job?.abort.abort(); if (this.state.stage === 'generating') this.state = { stage: 'cancelled', message: '已取消生成，原规则保持原样。' }; return this.snapshot(); }
   async dispose() { this.cancel(); await this.pending; }
