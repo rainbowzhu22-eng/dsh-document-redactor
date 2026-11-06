@@ -1,4 +1,4 @@
-export const REVISION = 'winreturn-repair-1';
+export const REVISION = 'redactor-1.4.0';
 
 export function validateReady(value) {
   const url = new URL(value?.url);
@@ -17,6 +17,7 @@ export class RedactorService {
     this.stage = 'idle';
     this.url = null;
     this.error = null;
+    this.preparation = null;
     this.generation = 0;
     this.worker = null;
     this.abort = null;
@@ -25,22 +26,25 @@ export class RedactorService {
   }
 
   snapshot() {
-    return { stage: this.stage, url: this.url, error: this.error, revision: REVISION };
+    return { stage: this.stage, url: this.url, error: this.error, preparation: this.preparation, revision: REVISION };
   }
 
-  start() {
+  start(options = {}) {
     if (this.error === 'STOP_FAILED') return this.snapshot();
     if (['preparing', 'starting', 'ready', 'stopping'].includes(this.stage)) return this.snapshot();
     const generation = ++this.generation;
     this.abort = new AbortController();
     const signal = this.abort.signal;
     this.stage = 'preparing';
+    this.preparation = 'checking';
     this.error = null;
     this.url = null;
     this.pending = (async () => {
       let worker;
       try {
-        const python = await this.runtime.prepare(signal);
+        const python = await this.runtime.prepare(signal, stage => {
+          if (generation === this.generation && this.stage === 'preparing') this.preparation = stage;
+        }, options);
         if (generation !== this.generation) return;
         this.stage = 'starting';
         worker = this.runtime.launch(python, signal);
@@ -66,7 +70,7 @@ export class RedactorService {
         const wasPreparing = this.stage === 'preparing';
         this.stage = 'error';
         this.url = null;
-        this.error = error.code === 'PYTHON_NOT_FOUND' ? 'PYTHON_NOT_FOUND' :
+        this.error = ['PYTHON_NOT_FOUND','PREPARATION_TIMEOUT'].includes(error.code) ? error.code :
           wasPreparing ? 'PREPARATION_FAILED' : 'START_FAILED';
       }
     })();
@@ -91,6 +95,7 @@ export class RedactorService {
       this.worker = null;
       this.stage = 'idle';
       this.error = null;
+      this.preparation = null;
       return this.snapshot();
     } catch (error) {
       this.stage = 'error';

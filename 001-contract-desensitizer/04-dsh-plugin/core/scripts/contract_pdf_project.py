@@ -148,22 +148,34 @@ def create(root, sid, source, filename, profile="contract", case_name="", terms=
     target = private / "original.pdf"
     shutil.copyfile(source, target)
     sha = hashlib.sha256(target.read_bytes()).hexdigest()
-    link_annotation_count = _count_link_annotations(target)
     import pypdfium2 as pdfium
     pdf = pdfium.PdfDocument(str(target))
-    if len(pdf) < 1:
-        raise ValueError("PDF 没有页面")
     pages = []
-    for i in range(len(pdf)):
-        page = pdf[i]
-        w, h = page.get_size()
-        pages.append({"page": i + 1, "width": w, "height": h, "stage": "pending",
-                      "reviewed": False, "revision": 0, "error": "", "ocr": "pending",
-                      "ocr_supplement": "pending", "block_version": 0,
-                      "manual_confirm": False, "dropped_lines": 0,
-                      "ocr_line_stats": _empty_ocr_line_stats()})
-        page.close()
-    pdf.close()
+    try:
+        if len(pdf) < 1:
+            raise ValueError("PDF 没有页面")
+        for i in range(len(pdf)):
+            page = pdf[i]
+            try:
+                w, h = page.get_size()
+                pages.append({"page": i + 1, "width": w, "height": h, "stage": "pending",
+                              "reviewed": False, "revision": 0, "error": "", "ocr": "pending",
+                              "ocr_supplement": "pending", "block_version": 0,
+                              "manual_confirm": False, "dropped_lines": 0,
+                              "ocr_line_stats": _empty_ocr_line_stats()})
+            finally:
+                page.close()
+    finally:
+        pdf.close()
+    # An unreadable optional annotation does not establish that a renderable
+    # source is unusable. Keep its count unknown; output validation stays strict.
+    from pypdf.errors import PdfReadError
+    try:
+        link_annotation_count = _count_link_annotations(target)
+        link_annotation_status = "complete"
+    except (PdfReadError, ValueError, TypeError, AttributeError, KeyError):
+        link_annotation_count = None
+        link_annotation_status = "unknown"
     project = {"kind": "pdf-v1.3", "sid": sid, "filename": filename,
                "sha256": sha, "profile": profile, "case_name": case_name,
                "policy_id": policy_id, "policy_selection": policy_selection or policy_id,
@@ -171,6 +183,7 @@ def create(root, sid, source, filename, profile="contract", case_name="", terms=
                "type_choices": {t: False for t in Policy.excluded_types(policy_id)
                                 if policy_selection == Policy.PRESERVE_TRANSACTION},
                "link_annotation_count": link_annotation_count,
+               "link_annotation_status": link_annotation_status,
                "stage": "processing", "done": 0, "cancel": False, "revision": 0,
                "pages": pages, "candidates": [], "regions": [], "terms": terms or [],
                "numbers": [], "scan_stats": {}, "case_rules_pending": False,
@@ -957,6 +970,71 @@ def _blocks_file(root, sid, page_no):
     return folder / f"{page_no:04d}.json"
 
 
+def ocr_lines(root, sid, page_no):
+    """Local review of every cached OCR row, including rows rejected by detection."""
+    with _lock(sid):
+        project = load(root, sid)
+        if not isinstance(page_no, int) or not 1 <= page_no <= len(project["pages"]):
+            raise ValueError("页码无效")
+        page = project["pages"][page_no - 1]
+        result = {"page": page_no, "available": False, "checked": bool(page.get("ocr_checked")),
+                  "lines": [], "stage": page["stage"]}
+        if page["stage"] != "ready":
+            return result
+        path = paths(root, sid)[0] / "private" / "text" / f"{page_no:04d}.ocr.json"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))["lines"]
+            if not isinstance(raw, list):
+                raise ValueError("invalid OCR rows")
+        except FileNotFoundError:
+            return result
+        except (OSError, ValueError, KeyError) as exc:
+            raise ValueError("逐行识别数据不可用，请重试本页识别") from exc
+        for index, line in enumerate(raw):
+            if not isinstance(line, dict):
+                line = {"text": str(line)}
+            text = str(line.get("text") or "")
+            confidence = line.get("confidence")
+            try:
+                confidence = float(confidence)
+                if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                    confidence = None
+            except (ValueError, TypeError):
+                confidence = None
+            boxes = line.get("boxes") or []
+            valid = []
+            for box in boxes if isinstance(boxes, list) else []:
+                if not isinstance(box, (list, tuple)) or len(box) != 4:
+                    continue
+                try:
+                    x0, y0, x1, y1 = [float(v) for v in box]
+                except (ValueError, TypeError):
+                    continue
+                if all(math.isfinite(v) for v in (x0,y0,x1,y1)) and 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1:
+                    valid.append((x0,y0,x1,y1))
+            bbox = ([min(b[0] for b in valid)*page["width"], min(b[1] for b in valid)*page["height"],
+                     max(b[2] for b in valid)*page["width"], max(b[3] for b in valid)*page["height"]] if valid else None)
+            issues = []
+            if confidence is None:
+                issues.append("未提供有效 OCR 分值")
+            elif confidence < OCR_REVIEW_THRESHOLD:
+                issues.append("OCR 分值较低，请核对原页")
+            if confidence is not None and confidence < OCR_LINE_ACCEPT_THRESHOLD:
+                issues.append("未纳入自动敏感识别")
+            nonspace = sum(not c.isspace() for c in text)
+            if not isinstance(boxes, list) or len(boxes) != len(text) or len(valid) < nonspace:
+                issues.append("坐标不完整，可能未纳入自动识别")
+            geometry = str(line.get("geometry") or "unknown")
+            if geometry == "line":
+                issues.append("仅有行级定位，请核对遮盖范围")
+            elif geometry != "character":
+                issues.append("定位精度未标注，请核对遮盖范围")
+            result["lines"].append({"index": index + 1, "text": text, "confidence": confidence,
+                                    "bbox": bbox, "issues": issues})
+        result["available"] = True
+        return result
+
+
 def _job_active(is_current, cancel):
     if cancel is not None and cancel.is_set():
         return False
@@ -987,7 +1065,17 @@ def process(root, sid, generation=None, is_current=None, cancel=None):
         base = paths(root, sid)[0]
         previews = base / "private" / "pages"
         previews.mkdir(exist_ok=True)
-        extracted = D.extract_pdf(str(source))
+        try:
+            extracted = D.extract_pdf(str(source))
+        except RuntimeError:
+            # PDFium has opened this source. If text parsing cannot recover,
+            # require image recognition/manual review under the existing gates.
+            extracted = D.Document(source=str(source), file_type="pdf", blocks=[],
+                                   sha256=project["sha256"])
+            with _lock(sid):
+                latest = load(root, sid)
+                latest["text_parse_fallback"] = True
+                save(root, sid, latest)
         by_page = {}
         for block in extracted.blocks:
             by_page.setdefault(block.page, []).append(block)
@@ -1069,6 +1157,7 @@ def process(root, sid, generation=None, is_current=None, cancel=None):
             page_state["block_version"] = PDF_BLOCK_VERSION
             # 重新处理一页即视为「此前的人工确认作废」，须重新确认。
             page_state["manual_confirm"] = False
+            page_state["ocr_checked"] = False
             page_state["stage"] = "ready"
             with _lock(sid):
                 if not _job_active(is_current, cancel):
@@ -1302,6 +1391,13 @@ def update(root, sid, req):
                 raise ValueError("页码无效")
             page = p["pages"][page_no - 1]
         snapshot = None
+        if action == "ocr-review":
+            if page is None or page["stage"] != "ready" or not isinstance(req.get("checked"), bool):
+                raise ValueError("OCR 核对状态无效，请等待本页识别完成")
+            page["ocr_checked"] = req["checked"]
+            # Review metadata does not change content, candidate decisions or export gates.
+            save(root, sid, p)
+            return public(p)
         if action in ("candidate", "type-toggle", "type-default-toggle",
                       "type-default-reset", "all-keep", "region-add", "region-update",
                       "region-delete", "unlocated-keep", "coverage-bind", "region-from-candidates", "candidates-keep"):
@@ -1921,6 +2017,10 @@ def _export_report_project(p):
     soft.append(
         "PDF中的批注及批注人名称可能作为页面内容保留；工具不能单独扫描并脱敏批注人信息，请逐页核对。")
     link_count = int(p.get("link_annotation_count") or 0)
+    if p.get("link_annotation_status") == "unknown":
+        soft.append("原件链接批注无法完整检查，数量未知；导出仍从页面图像重建并检查可点击链接。请核对页面上的可见信息。")
+    if p.get("text_parse_fallback"):
+        soft.append("原件文字层解析失败，已改用页面图像识别；请逐页核对文字与手工遮盖。")
     if link_count:
         soft.append("本次导出将移除 %d 个可点击链接；页面印出的可见网址仍须脱敏或遮盖。" % link_count)
     empty = [x["page"] for x in p["pages"] if x.get("ocr") == "empty"]

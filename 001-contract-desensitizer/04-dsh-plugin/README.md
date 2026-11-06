@@ -1,68 +1,59 @@
-# 文书脱敏工作台
+# 文书脱敏工作台 · DSH 插件
 
-**在 DSH 里，三步完成文书脱敏。**
+上传文书，核对敏感内容，导出脱敏稿。支持 Word、文字／扫描／照片 PDF、TXT 和 Markdown；解析与脱敏在本机完成。同案材料可沿用字段与占位符；Word 可配合映射还原，PDF 导出为像素稿、不提供映射还原。
 
-合同要交给 AI 分析，诉状要发给同事讨论，证据材料要整理成案例——反复查找、替换姓名和证件号，既费时又容易漏。
+本地安装包版本为 **1.4.0**。已完成 macOS 的 Web／DSH 桌面验证和隔离联网准备恢复；Windows 新增路径仍待现场复验。实际公开制品见 [GitHub Releases](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases)；旧版 Windows／macOS 结果不代替本版新增路径验收。
 
-文书脱敏工作台把**识别、复核、替换、还原**放进 DeepSeek Harness。上传文书，核对敏感内容，导出脱敏稿；同一案件的多份材料还能沿用同一套字段和占位符。
+## 安装和打开
 
-**Windows / macOS 均已实测 · 支持 Word、PDF、TXT、Markdown · 文书在本机处理**
+1. 安装并打开 [DeepSeek Harness](https://deepseek.com/harness/)。
+2. 从 Releases 下载所选版本的 TGZ，**无需解压**。
+3. 在“插件 → 添加插件”填写 TGZ 的**完整路径**，按提示启用或重启；打开“文书脱敏 → 打开脱敏工具”。
 
-[**下载 v1.3.2**](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.3.2) · [工具官网](https://xingchendata.com/dsh-document-redactor.html) · [帮助与反馈](https://xingchendata.com/dsh-document-redactor.html#community)
+Windows：Shift＋右键选择“复制文件地址／复制为路径”，粘贴后**删除最外层双引号，保留路径内空格**。示例：`C:\Users\你的用户名\Downloads\dsh-document-redactor-1.4.0.tgz`。
 
-![文书脱敏工作台界面](media/desktop-home-0.3.1.png)
+macOS：Finder 选中文件，按 Option＋Command＋C 复制完整路径。示例：`/Users/你的用户名/Downloads/dsh-document-redactor-1.4.0.tgz`。
 
-## 核心功能
+示例仅表示路径格式，请使用实际下载版本和位置。只填写文件名会被当作在线包名查询，可能出现 `ERR_PNPM_INVALID_PACKAGE_NAME`，切换镜像不能修正路径。
 
-| 你要做的事 | 工作台怎么帮你 |
-| --- | --- |
-| 找出文书里的敏感信息 | 自动识别人名、证件号、联系方式、机构、地址等内容，在页面中集中核对与补充。 |
-| 处理同一案件的多份文书 | 沿用同案字段与占位符，保持同一当事人在不同材料中的称呼一致。 |
-| 遮盖 PDF 页面内容 | 在页面上直接框选、调整遮盖区域，处理文字、签章等需要隐藏的内容。 |
-| 把脱敏后的 Word 还原 | 配合映射恢复原有字段，方便继续编辑与办理案件。 |
-| 让工具适应自己的文书 | 用自然语言告诉 DSH Agent 识别需求，查看规则修改方案后应用。 |
-| 接着处理以前的材料 | 从历史记录重开项目、取回原件，继续处理。 |
-
-## 开始使用
-
-1. 安装 [DeepSeek Harness](https://deepseek.com/harness/)，通过应用菜单“管理 dsh 命令…”注册 `dsh` 命令。
-2. [下载插件安装包](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.3.2)，选择 `dsh-document-redactor-1.3.2.tgz`。
-3. 从菜单或托盘退出 DSH，在下载目录打开终端，执行：
+终端安装须先通过 DSH 菜单“管理 dsh 命令…”注册命令，再从菜单／托盘退出 DSH，在 TGZ 所在目录运行：
 
 ```sh
-dsh plugin --profile desktop add "./dsh-document-redactor-1.3.2.tgz"
+dsh plugin --profile desktop add "./dsh-document-redactor-1.4.0.tgz"
 ```
 
-重新打开 DSH，点击侧栏 **“文书脱敏” → “打开脱敏工具”**，即可进入工作台。Windows 与 macOS 使用同一份 TGZ 安装包。
+终端引号用于保护路径；桌面输入框删除外层引号。Windows 与 macOS 使用同一 TGZ。
 
-## 从上传到导出，只要三步
+## 首次准备与失败恢复
 
-1. **上传文书**：选择文件，按需要设置金额、日期等处理策略。
-2. **核对与调整**：查看识别结果，补充字段；PDF 可直接框选遮盖。同案材料可复用字段设置。
-3. **导出使用**：保存脱敏稿，用于 AI 分析、材料协作或案例整理。需要恢复 Word 内容时，使用映射还原。
+需要 Python 3.9+。首次准备联网安装解析和 OCR 依赖，页面显示环境检查、Python 准备、依赖安装和能力检查等阶段。
 
-识别规则想再贴合业务一些？在复核页点击 **“让 Agent 调整识别规则”**，描述需求、查看差异、应用方案，后续文书就能使用这套规则。
+可选择沿用上次设置、系统默认源、PyPI 官方源或清华 TUNA 镜像。选择仅保存于插件数据目录，不修改系统 pip 配置，不向下载源发送文书。网络中断、超时或取消后可以重试，保留已有依赖与 pip 缓存；20分钟整体期限到达后停止本次准备，可切源重试。已有环境检查通过时直接复用；Windows 检查包含 OCR 后端、模型和 WinRT 组件。
 
-## 日常使用
+失败可查看数据目录的 `environment.log`；无需反复重装插件或清空文书数据。管理者可用 `DSH_REDACTOR_PYTHON` 指定 Python 可执行文件。
 
-- **同案材料**：在上传时选用同案设置，让多份文书延续一致的字段与占位符。
-- **历史项目**：从插件顶栏进入历史记录，重开项目或取回原件。
-- **调整规则**：从复核页或“识别规则”入口打开 Agent 规则助手。
-- **交流反馈**：点击首页或右上角的“帮助与反馈”，查看交流群与联系入口。
-- **返回 DSH**：点击“返回 DSH”，继续使用宿主中的其他功能。
+## PDF 逐页复核
 
-## 反馈与贡献
+仍可可靠渲染的 PDF，原件链接统计异常时提示数量未知并继续页面识别；不可读取或未解密的文件报错。导出仍从像素重建并检查可点击链接，保留候选处置门禁。可见网址、签章、批注文字和漏识别内容仍须人工检查与补框。
 
-欢迎通过 [GitHub Issues](https://github.com/rainbowzhu22-eng/dsh-document-redactor/issues) 提交使用反馈和功能建议，也可以从 [工具官网](https://xingchendata.com/dsh-document-redactor.html#community) 加入交流群。参与开发请参阅 [CONTRIBUTING.md](CONTRIBUTING.md)。
+展开“逐行核对本页 OCR 文字”，查看全部缓存行，包括未命中敏感规则、低分和坐标不完整的行；有可靠坐标时点击定位原页，无分值或无法定位时明确说明。OCR 分值表示文字识别把握程度，候选置信度用于敏感类型判断。
 
-## 来源与致谢
+“我已人工核对本页 OCR 文字”单独记录，不代替候选处置、不解除门禁，也不要求逐行点击。重新识别后本页该记录失效；旧项目无逐行缓存时可重试本页识别。
 
-本项目基于 [Cece 的 cece_legal_skills](https://github.com/whatcccup/cece_legal_skills) 及 Phoeny-Xu 的协作返件开发。感谢上游作者的文书脱敏引擎与持续贡献。
+## 规则方案放弃与回退
 
-**DSH 适配与维护：朱玲凤 / The Data Galaxy**。
+描述需求 → 生成方案 → 查看差异 → 确认应用。生成中可取消，生成后可“放弃方案”；放弃不改活动规则，重开不恢复已放弃方案。
 
-上游与适配层 MIT 版权声明见 [LICENSE](LICENSE)；群码控制器的 Apache-2.0 来源声明见 [NOTICE](NOTICE)，许可全文见 [licenses/Apache-2.0.txt](licenses/Apache-2.0.txt)。
+“规则应用记录与回退”展示最近100条记录。选择记录先核对差异，再确认恢复到该次应用前的完整规则；该记录之后的修改也会撤销。删除自定义规则仍须确认。校验失败、备份异常或并发修改时保留当前规则；回退也保存备份与记录。旧版只有备份、没有可验证记录的，不伪造为回退历史。
 
-## English
+“恢复最近有效配置”用于配置错误恢复，与撤销业务改动不同。应用／回退后须重新上传识别，旧项目仍受规则变化门禁保护，已导出文件不会自动改变。
 
-Redact documents without leaving DeepSeek Harness. Upload Word, PDF, TXT or Markdown files, review sensitive fields, and export a redacted copy. Keep placeholders consistent across case documents, mark PDF regions, restore Word fields with a mapping, and ask the DSH Agent to tailor detection rules. Document processing runs locally. Tested on Windows and macOS.
+## 数据与联网说明
+
+数据默认位于当前 DSH 主目录的 `document-redactor/`：`sessions/` 为文书，`rules/` 为规则和备份，`environment/` 为 Python 环境，`environment-settings.json` 保存下载源。数据与插件代码分开，升级保留。关闭面板不删除项目，停止只结束自有服务；服务绑定 `127.0.0.1`。
+
+规则助手只提交当前规则和主动填写的需求，不自动附带文书、候选原文或映射；云端模型需要联网。请用虚构示例；助手无文件、终端或其他工具权限。首页与帮助页读取官网群码时不附带文书、规则、映射或对话。
+
+识别可能漏项，外发前须核对最终文件。删除本机项目不覆盖原位置文件、下载文件及宿主／模型记录，不等于安全擦除。
+
+R99 原始来源见 `core/BASELINE.json`，衍生改动见 `core/RETURN-MERGE.json`；许可见 LICENSE、NOTICE 与 `licenses/Apache-2.0.txt`。

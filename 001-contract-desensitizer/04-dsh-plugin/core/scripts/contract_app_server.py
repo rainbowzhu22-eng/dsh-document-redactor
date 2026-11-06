@@ -69,7 +69,7 @@ from contract_redactor import (
 
 APP_NAME = "contract_app_server"
 APP_VERSION = "1.3.1"
-APP_REVISION = "winreturn-repair-1"
+APP_REVISION = "redactor-1.4.0"
 DEFAULT_PORT = 18800
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
 MAX_REQUEST_BODY_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024
@@ -1347,6 +1347,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "project": pdf_project.public(p)})
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 404)
+            return
+        m = re.fullmatch(r"/api/pdf/ocr-lines/([0-9a-f]{12})/([0-9]+)", path)
+        if m:
+            if self.headers.get("X-Local-Project") != "1":
+                self._send_json({"ok": False, "error": "project access denied"}, 403)
+                return
+            try:
+                result = pdf_project.ocr_lines(self.state.work_dir, m.group(1), int(m.group(2)))
+                self._send_json({"ok": True, **result})
+            except Exception:
+                self._send_json({"ok": False, "error": "逐行识别数据不可用，请检查页码或重试本页识别"}, 404)
             return
         m = re.fullmatch(r"/api/pdf/page/([0-9a-f]{12})/([0-9]+)", path)
         if m:

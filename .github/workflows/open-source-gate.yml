@@ -1,0 +1,10 @@
+name: Open Source Gate
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/open-source-gate.sh --all
