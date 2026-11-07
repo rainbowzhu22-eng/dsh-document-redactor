@@ -14,6 +14,7 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
   .redactor-body{flex:1;min-height:0;display:flex;position:relative;overflow:auto}.redactor-body iframe{border:0;flex:1;min-width:0;height:100%;background:var(--rd-bg)}
   .redactor-start{max-width:640px;margin:64px auto;padding:26px}.redactor-start h1{font-size:27px;font-weight:680;line-height:1.3}.redactor-start p{color:var(--rd-sub);line-height:1.72;font-size:14.5px}
   .redactor-alert{font-size:13.5px;line-height:1.72;color:#d92d20;margin:0;padding:10px 24px;background:#fef3f2}
+  .redactor-faq{margin:24px 0;padding:18px 20px;border:1px solid #e2e7f1;border-radius:14px;background:#fff;color:#39465a;font-size:13.5px;line-height:1.72;min-width:0}.redactor-faq h3{margin:0 0 12px;font-size:16px;color:#0d1626}.redactor-faq details+details{border-top:1px solid #e2e7f1;margin-top:12px;padding-top:12px}.redactor-faq summary{cursor:pointer;font-weight:600;color:#0d1626}.redactor-faq p,.redactor-start .redactor-faq p{font-size:13.5px;margin:10px 0;color:#6b7a90}.redactor-faq ol{padding-left:22px;margin:12px 0}.redactor-faq li{margin:6px 0}.redactor-faq textarea{display:block;width:100%;box-sizing:border-box;margin:12px 0;padding:12px;border:1px solid #c9d5ff;border-radius:10px;resize:vertical;min-height:154px;background:#f7f9fd;color:#39465a;font:inherit;line-height:1.72;overflow-wrap:anywhere}.redactor-faq textarea:focus{outline:3px solid #3355ff1c;border-color:#3355ff}.redactor-faq [role=status]{min-height:1.72em}.redactor-faq .redactor-btn{white-space:normal;text-align:center}.redactor-faq code{overflow-wrap:anywhere}
   .redactor-drawer{width:400px;max-width:45%;flex:none;border-left:1px solid var(--rd-line);background:var(--rd-surface);overflow-y:auto;padding:22px;box-sizing:border-box}
   .redactor-drawer h3{font-size:18px;font-weight:640;line-height:1.4;margin:0}.redactor-drawer h4{font-size:16px;font-weight:640;line-height:1.5;margin:20px 0 8px}
   .redactor-drawer p{font-size:13.5px;line-height:1.72;color:var(--rd-sub);margin:12px 0}.redactor-drawer label{display:block;margin:18px 0 8px;font-size:14.5px;font-weight:560;line-height:1.72;color:var(--rd-ink-2)}
@@ -118,12 +119,54 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
         h('p',null,h('a',{href:'https://xingchendata.com/dsh-document-redactor.html#community',target:'_blank',rel:'noopener noreferrer'},'访问工具官网（帮助与反馈） ↗'))),
       ready&&h('figure',null,h('img',{key:value.group.image,src:value.group.image,alt:value.group.name+'二维码',width:220,height:220,referrerPolicy:'no-referrer',onError:()=>controller.current?.imageFailed(value.group.image)}),h('figcaption',null,'微信群 · 产品交流与反馈')));
   }
+  // INITIALIZATION-HELP-BEGIN
+  const INITIALIZATION_PROMPT = '请排查本机“文书脱敏”插件为什么初始化失败。先只读排查，不安装依赖、不修改文件。请确认实际安装的插件版本、系统和 Python/pip 版本，定位插件实际数据目录中的 environment.log；如果是服务启动失败，再检查 service.log，不要只查当前工作区。请把最近一次失败的关键日志原文（错误附近最多40行）发出来，保留错误码、包名与版本，并说明失败在哪一步、建议怎样修复。如涉及依赖冲突，请列出冲突包及约束，不要直接判定为误报。请勿读取或输出文书、规则和映射内容；输出前隐去账号、密钥、代理密码和个人路径信息。';
+
+  async function copyInitializationPrompt(field, clipboard = globalThis.navigator?.clipboard) {
+    try {
+      if (!clipboard?.writeText) throw new Error('CLIPBOARD_UNAVAILABLE');
+      await clipboard.writeText(INITIALIZATION_PROMPT);
+      return 'copied';
+    } catch {
+      if (!field) return 'unavailable';
+      field.focus();
+      field.select();
+      return 'selected';
+    }
+  }
+  // INITIALIZATION-HELP-END
+
+  function InitializationHelp({failed = false}) {
+    const field = React.useRef(null);
+    const [copyState, setCopyState] = React.useState('');
+    return h('section', {className:'redactor-faq', 'aria-label':'常见问题与排查'},
+      h('h3', null, '常见问题与排查'),
+      h('details', {open:failed},
+        h('summary', null, '初始化失败或打不开，怎样让 DSH 帮我排查？'),
+        h('ol', null,
+          h('li', null, '点击下方“复制排查指令”。'),
+          h('li', null, '点击左上角“返回 DSH”，新建一个会话（任务）。'),
+          h('li', null, '粘贴指令并发送，让 DSH 查找本机插件的失败日志。'),
+          h('li', null, '将返回的插件版本、操作步骤和关键日志发给维护者。')),
+        h('textarea', {ref:field, readOnly:true, value:INITIALIZATION_PROMPT, rows:7, 'aria-label':'可复制的初始化失败排查指令'}),
+        h('button', {type:'button', className:'redactor-btn', onClick:async()=>setCopyState(await copyInitializationPrompt(field.current))}, copyState==='copied'?'已复制，可返回 DSH':'复制排查指令'),
+        h('p', {role:'status', 'aria-live':'polite'}, copyState==='copied'?'复制成功。返回 DSH，新建会话后粘贴发送。':copyState==='selected'?'自动复制未成功，已选中文字；请按 Ctrl+C（Mac 按 Command+C）复制。':copyState==='unavailable'?'自动复制暂不可用，请手动选中上方指令复制。':'这段指令只排查和提取日志，不会要求 DSH 自动修复。')),
+      h('details', null, h('summary', null, '下载依赖很慢或超时，怎么办？'),
+        h('p', null, '在未打开工具的页面找到“依赖下载源”，改选“清华 TUNA 镜像”或“PyPI 官方源”，再点“重试打开”。不同网络可用的源不同；1.4.0 需要手动切换，会保留已安装依赖和缓存。'),
+        h('p', null, '切源后仍失败，请按上面的步骤提取日志。不要反复卸载插件或清空文书数据。')),
+      h('details', null, h('summary', null, '添加插件时提示“无法识别包名或地址”，怎么办？'),
+        h('p', null, '在线安装须粘贴完整的 TGZ 下载地址，从 https:// 开始，到 .tgz 结束。也可先下载 TGZ，再填本机文件的完整路径；不要只填文件名。Windows“复制文件地址”带出的最外层双引号需要删掉，路径里的空格保留。')),
+      h('details', null, h('summary', null, '反馈时需要发什么？'),
+        h('p', null, '请发插件版本、系统、失败步骤、错误附近的日志原文及必要截图。日志可能含个人路径或账号，请先遮盖；无需发送真实文书、规则全文或映射文件。')));
+  }
+
   function CommunityHelp({onClose}) {
     const dialog=React.useRef(null);
     React.useEffect(()=>{const previous=document.activeElement;dialog.current?.showModal();return()=>{if(dialog.current?.open)dialog.current.close();previous?.focus?.();};},[]);
     return h('dialog',{ref:dialog,className:'redactor-help','aria-labelledby':'redactor-help-title',onCancel:event=>{event.preventDefault();onClose();},onClick:event=>{if(event.target===event.currentTarget){const box=event.currentTarget.getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)onClose();}}},
       h('header',null,h('h2',{id:'redactor-help-title'},'帮助与反馈'),h('button',{type:'button',className:'redactor-btn',onClick:onClose,'aria-label':'关闭帮助与反馈'},'关闭 ×')),
       h('p',{className:'redactor-help-intro'},'上传文书 → 复核敏感内容 → 导出脱敏文件。识别有遗漏时，可补字段、框选遮盖，或让 Agent 调整通用规则。'),
+      h(InitializationHelp),
       h(CommunityContact),
       h('div',{className:'redactor-help-notes'},h('p',null,'反馈问题时，请说明插件版本、操作步骤和报错；截图请先遮盖敏感内容，避免发送真实文书与映射。'),h('p',null,'群码从官网自动更新。获取时不附带您的文书、规则或对话。')));
   }
@@ -220,7 +263,7 @@ window.__ModuleLoader__.load({ id: 'dsh-document-redactor', factory: function(re
             h('label',null,'依赖下载源　',h('select',{value:downloadSource,disabled:busy,onChange:event=>setDownloadSource(event.target.value),'aria-label':'依赖下载源'},
               h('option',{value:'saved'},'沿用上次设置（首次使用系统默认）'),h('option',{value:'default'},'系统默认源'),h('option',{value:'pypi'},'PyPI 官方源'),h('option',{value:'tuna'},'清华 TUNA 镜像'))),
             h('p',null,'仅首次准备或修复依赖时使用；不会修改系统 pip 设置，也不向下载源发送文书。'),
-            h('p',{role:'status'},busy?(preparationLabels[state.preparation] || labels[state.stage]):'点击右上角“打开脱敏工具”开始。准备失败可切换下载源重试，已安装依赖与下载缓存会保留。'),h(CommunityContact)),
+            h('p',{role:'status'},busy?(preparationLabels[state.preparation] || labels[state.stage]):'点击右上角“打开脱敏工具”开始。准备失败可切换下载源重试，已安装依赖与下载缓存会保留。'),h(InitializationHelp,{failed:state.stage==='error'}),h(CommunityContact)),
         drawer && state.stage === 'ready' && h('aside',{className:'redactor-drawer','aria-label':'Agent识别规则助手'},
           h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}},h('h3',null,'调整识别规则'),btn('收起',()=>setDrawer(false))),
           h('p',null,'本份文书只漏一处，可在复核页直接补字段或框选。需要后续文书也自动识别时，再修改通用规则。'),

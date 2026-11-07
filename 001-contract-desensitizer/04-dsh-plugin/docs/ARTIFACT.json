@@ -1,17 +1,17 @@
 {
-  "version": "1.4.0",
-  "tag": "v1.4.0",
+  "version": "1.4.1",
+  "tag": "v1.4.1",
   "sourceRepository": "https://github.com/rainbowzhu22-eng/dsh-document-redactor",
   "pluginDirectory": "001-contract-desensitizer/04-dsh-plugin",
-  "artifact": "dsh-document-redactor-1.4.0.tgz",
-  "bytes": 430941,
-  "sha256": "05ab22909279123e72879f8aa3e47b148f945a10ba8ad49b453ff2254b7cfcd5",
+  "artifact": "dsh-document-redactor-1.4.1.tgz",
+  "bytes": 432905,
+  "sha256": "75b551abff624cc048eb259f34f9007cccfd2211cdf0ef856de399d1e39adae2",
   "packageFiles": 40,
   "packageFileHashes": {
     "LICENSE": "66b2ba6d6e762a3c40a9875d89a53fac29b153de33df510d89f9c131e5d4334c",
     "NOTICE": "82cb9a5a7097ebd3a8044ca83165166a813a19a0b364c26b5d3db4ce6c079741",
-    "README.md": "a949ed48de8fa4bbd0c463c365ce9248dce8979c0157c1e8f2a0d8897b523b5c",
-    "client.js": "9e1ce2051684757ecfa1148c858ea637c745e4174fce9dac9984ebab1d4fe304",
+    "README.md": "27e3f01ae111d9b855aa8c54c99693568d8d5cbf28526eefe18c4cac0eb5d787",
+    "client.js": "cd31480d10fbe09b315e095d393ac759d92790bc6e270e7cacbfdb865c7ebfab",
     "constraints.txt": "36be4278f6445a37f73430509b105a521bcc505542a42e271b3dfd3c0e77ff9e",
     "cordis.patch.yml": "3df4efaef81b3d6af42aea4a5bbcffd512b6715784d49454c0210f75cf6f032d",
     "core/BASELINE.json": "3c2708d865bb2aaed69a799811f9c0bdd43d1eec7c4c655f4ae27af79b361e83",
@@ -39,7 +39,7 @@
     "core/scripts/requirements.txt": "b84a52be8309a91bb672dc2f44ff1b2e85e15c622b8d629df8c8cc9e13cc8441",
     "index.js": "456f4b8fa4d47dd64f185ba70165737d368fafb3748eff8dec9fcee16ed2cd05",
     "licenses/Apache-2.0.txt": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
-    "package.json": "082046820f1e26e547c5f0541d283d97c2f6645ccd9b0ce91a395b5c0fa02e4b",
+    "package.json": "ecf993510b00bfab544e98765ec5b13149862740e06aa0647e33dcc860eb29d3",
     "presentation.py": "c51123a4c7c772f6b73026841c479d571c62fe97d4c637ce936b9cb04ff9bd18",
     "rules-agent.js": "242bb7c4dfd60bcec22a37d40f1c5db9c89c47c67a0cc956a59eb5574f1c8412",
     "rules_check.py": "239779b5ceaabc1b8e3cfc40b6e9c2ba926a823b617651648a88c99fd70fafe5",
@@ -49,20 +49,18 @@
     "workbench.css": "ffe637ee430f7a218bae23ecd978874541493f57a6a390d95817c6b7b4f4fcf8",
     "workbench.js": "20057b8836b5b6767c61c202b7c557a328af4e32b899959ba58f691304c89923"
   },
-  "testedArtifactReusedWithoutRebuild": true,
-  "sourceReadme": "README.md",
-  "packageReadmeIsBuildTimeSnapshot": true,
+  "builds": 1,
   "validationReuse": {
-    "fullRegressionPassed": 68,
-    "macWebAndNativeDesktop": true,
-    "realOcrIntegration": true,
-    "networkFailureRecovery": true,
-    "runtimeUnchangedSinceTestedArtifact": true
+    "directedClipboardTestsPassed": 2,
+    "unchangedRuntimeBaseline": "1.4.0",
+    "fullRegressionReruns": 0
   },
-  "publicationDirectedTests": {
-    "passed": 10,
-    "suite": "PDF structure (5), repeated custom rules (1), encoding and source validation (2), OCR content and review state (2)"
+  "nativeFaqAcceptance": {
+    "host": "macOS DSH 0.2.2-rc.1",
+    "passed": true,
+    "scope": "idle/error FAQ, real clipboard copy, help modal Escape/focus",
+    "modelCalls": 0,
+    "newPythonInstallations": 0
   },
-  "windowsNewPaths": "pending onsite verification",
-  "userOriginalPdf": "pending"
+  "windowsNewPaths": "pending onsite verification"
 }
