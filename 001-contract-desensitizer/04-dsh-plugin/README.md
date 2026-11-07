@@ -2,7 +2,7 @@
 
 上传文书，核对敏感内容，导出脱敏稿。支持 Word、文字／扫描／照片 PDF、TXT 和 Markdown；解析与脱敏在本机完成。同案材料可沿用字段与占位符；Word 可配合映射还原，PDF 导出为像素稿、不提供映射还原。
 
-本地安装包版本为 **1.4.0**。已完成 macOS 的 Web／DSH 桌面验证和隔离联网准备恢复；Windows 新增路径仍待现场复验。实际公开制品见 [GitHub Releases](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases)；旧版 Windows／macOS 结果不代替本版新增路径验收。
+本地安装包版本为 **1.4.1**，新增初始化失败 FAQ 与可复制的 DSH 排查指令。解析、导出和环境安装逻辑沿用 1.4.0，复用该版 macOS Web／DSH 桌面及隔离联网恢复验证；Windows 新增路径仍待现场复验。实际公开制品见 [GitHub Releases](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases)；旧版 Windows／macOS 结果不代替本版新增路径验收。
 
 ## 安装和打开
 
@@ -10,16 +10,16 @@
 2. 从 Releases 下载所选版本的 TGZ，**无需解压**。
 3. 在“插件 → 添加插件”填写 TGZ 的**完整路径**，按提示启用或重启；打开“文书脱敏 → 打开脱敏工具”。
 
-Windows：Shift＋右键选择“复制文件地址／复制为路径”，粘贴后**删除最外层双引号，保留路径内空格**。示例：`C:\Users\你的用户名\Downloads\dsh-document-redactor-1.4.0.tgz`。
+Windows：Shift＋右键选择“复制文件地址／复制为路径”，粘贴后**删除最外层双引号，保留路径内空格**。示例：`C:\Users\你的用户名\Downloads\dsh-document-redactor-1.4.1.tgz`。
 
-macOS：Finder 选中文件，按 Option＋Command＋C 复制完整路径。示例：`/Users/你的用户名/Downloads/dsh-document-redactor-1.4.0.tgz`。
+macOS：Finder 选中文件，按 Option＋Command＋C 复制完整路径。示例：`/Users/你的用户名/Downloads/dsh-document-redactor-1.4.1.tgz`。
 
 示例仅表示路径格式，请使用实际下载版本和位置。只填写文件名会被当作在线包名查询，可能出现 `ERR_PNPM_INVALID_PACKAGE_NAME`，切换镜像不能修正路径。
 
 终端安装须先通过 DSH 菜单“管理 dsh 命令…”注册命令，再从菜单／托盘退出 DSH，在 TGZ 所在目录运行：
 
 ```sh
-dsh plugin --profile desktop add "./dsh-document-redactor-1.4.0.tgz"
+dsh plugin --profile desktop add "./dsh-document-redactor-1.4.1.tgz"
 ```
 
 终端引号用于保护路径；桌面输入框删除外层引号。Windows 与 macOS 使用同一 TGZ。
@@ -31,6 +31,21 @@ dsh plugin --profile desktop add "./dsh-document-redactor-1.4.0.tgz"
 可选择沿用上次设置、系统默认源、PyPI 官方源或清华 TUNA 镜像。选择仅保存于插件数据目录，不修改系统 pip 配置，不向下载源发送文书。网络中断、超时或取消后可以重试，保留已有依赖与 pip 缓存；20分钟整体期限到达后停止本次准备，可切源重试。已有环境检查通过时直接复用；Windows 检查包含 OCR 后端、模型和 WinRT 组件。
 
 失败可查看数据目录的 `environment.log`；无需反复重装插件或清空文书数据。管理者可用 `DSH_REDACTOR_PYTHON` 指定 Python 可执行文件。
+
+## 常见问题：初始化失败
+
+插件未打开或初始化失败的页面，以及“帮助与反馈”中，提供“常见问题与排查”；失败时默认展开首项，可复制排查指令。
+
+1. 点击“复制排查指令”。
+2. 点击左上角“返回 DSH”，新建一个会话（任务）。
+3. 粘贴并发送，让 DSH 查找插件实际数据目录中的失败日志。
+4. 将插件版本、失败步骤和关键日志反馈给维护者。请先遮盖个人信息，无需发送文书、规则或映射。
+
+可直接发送的排查指令：
+
+> 请排查本机“文书脱敏”插件为什么初始化失败。先只读排查，不安装依赖、不修改文件。请确认实际安装的插件版本、系统和 Python/pip 版本，定位插件实际数据目录中的 environment.log；如果是服务启动失败，再检查 service.log，不要只查当前工作区。请把最近一次失败的关键日志原文（错误附近最多40行）发出来，保留错误码、包名与版本，并说明失败在哪一步、建议怎样修复。如涉及依赖冲突，请列出冲突包及约束，不要直接判定为误报。请勿读取或输出文书、规则和映射内容；输出前隐去账号、密钥、代理密码和个人路径信息。
+
+下载依赖超时可先切换“依赖下载源”后重试；添加插件时须使用完整 https:// 下载地址或本机绝对路径，不能只填文件名。
 
 ## PDF 逐页复核
 
