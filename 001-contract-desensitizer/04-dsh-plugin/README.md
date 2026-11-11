@@ -2,7 +2,7 @@
 
 上传文书，核对敏感内容，导出脱敏稿。支持 Word、文字／扫描／照片 PDF、TXT 和 Markdown；解析与脱敏在本机完成。同案材料可沿用字段与占位符；Word 可配合映射还原，PDF 导出为像素稿、不提供映射还原。
 
-本地安装包版本为 **1.4.1**，新增初始化失败 FAQ 与可复制的 DSH 排查指令。解析、导出和环境安装逻辑沿用 1.4.0，复用该版 macOS Web／DSH 桌面及隔离联网恢复验证；Windows 新增路径仍待现场复验。实际公开制品见 [GitHub Releases](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases)；旧版 Windows／macOS 结果不代替本版新增路径验收。
+本地安装包版本为 **1.4.2**，修复录屏反馈中的识别问题：PDF 文字层康熙部首字符、当事人列表人名、跨行公司名、引号简称、公司后缀误报；自定义日期／金额规则（DATE_／AMOUNT_ 开头）随“保留金额、日期”保留；OCR 重复框去重，导出预览与缩略图失败可重试。已在 macOS DSH 桌面版 0.2.2-rc.1 隔离实测；Windows 与 Word 路径沿用 1.4.1 验证范围。实际公开制品见 [GitHub Releases](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases)；旧版 Windows／macOS 结果不代替本版新增路径验收。
 
 ## 安装和打开
 
@@ -10,16 +10,16 @@
 2. 从 Releases 下载所选版本的 TGZ，**无需解压**。
 3. 在“插件 → 添加插件”填写 TGZ 的**完整路径**，按提示启用或重启；打开“文书脱敏 → 打开脱敏工具”。
 
-Windows：Shift＋右键选择“复制文件地址／复制为路径”，粘贴后**删除最外层双引号，保留路径内空格**。示例：`C:\Users\你的用户名\Downloads\dsh-document-redactor-1.4.1.tgz`。
+Windows：Shift＋右键选择“复制文件地址／复制为路径”，粘贴后**删除最外层双引号，保留路径内空格**。示例：`C:\Users\你的用户名\Downloads\dsh-document-redactor-1.4.2.tgz`。
 
-macOS：Finder 选中文件，按 Option＋Command＋C 复制完整路径。示例：`/Users/你的用户名/Downloads/dsh-document-redactor-1.4.1.tgz`。
+macOS：Finder 选中文件，按 Option＋Command＋C 复制完整路径。示例：`/Users/你的用户名/Downloads/dsh-document-redactor-1.4.2.tgz`。
 
 示例仅表示路径格式，请使用实际下载版本和位置。只填写文件名会被当作在线包名查询，可能出现 `ERR_PNPM_INVALID_PACKAGE_NAME`，切换镜像不能修正路径。
 
 终端安装须先通过 DSH 菜单“管理 dsh 命令…”注册命令，再从菜单／托盘退出 DSH，在 TGZ 所在目录运行：
 
 ```sh
-dsh plugin --profile desktop add "./dsh-document-redactor-1.4.1.tgz"
+dsh plugin --profile desktop add "./dsh-document-redactor-1.4.2.tgz"
 ```
 
 终端引号用于保护路径；桌面输入框删除外层引号。Windows 与 macOS 使用同一 TGZ。

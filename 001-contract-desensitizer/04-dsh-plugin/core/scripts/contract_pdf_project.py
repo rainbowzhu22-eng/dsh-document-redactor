@@ -39,6 +39,23 @@ def _default_type_enabled(type_id):
     return DEFAULT_TYPE_DEFAULTS.get(type_id, True)
 
 
+def _register_policy_types(project):
+    """自定义交易要素类型首次出现时，按项目策略补齐类型默认值，与内置日期一致。"""
+    if "type_defaults" not in project:
+        return
+    policy_id = project.get("policy_id", Policy.PRESERVE_TRANSACTION)
+    defaults = project.setdefault("type_defaults", {})
+    choices = project.setdefault("type_choices", {})
+    for key in ("candidates", "unlocated_candidates"):
+        for item in project.get(key, []):
+            type_id = item.get("type")
+            if not type_id or type_id in defaults or not Policy.is_excluded(type_id, policy_id):
+                continue
+            defaults[type_id] = False
+            if project.get("policy_selection") == Policy.PRESERVE_TRANSACTION:
+                choices.setdefault(type_id, False)
+
+
 def _lock(sid):
     return LOCKS.setdefault(sid, threading.RLock())
 
@@ -529,8 +546,8 @@ def _effective_candidate_state(project, item):
                 (item.get("status") == "keep" and not item.get("policy_excluded"))):
             return {"selected": False, "state": "keep", "source": "user"}
         policy_id = project.get("policy_id", Policy.PRESERVE_TRANSACTION)
-        excluded = item.get("policy_excluded", item.get("type") in
-                            Policy.excluded_types(policy_id))
+        excluded = item.get("policy_excluded",
+                            Policy.is_excluded(item.get("type"), policy_id))
         if excluded:
             return {"selected": False, "state": "policy-excluded", "source": "policy"}
         return {"selected": bool(item.get("selected")),
@@ -562,12 +579,14 @@ def _migrate_legacy_type_state(project):
     """Upgrade only when a user edits an old project; never on read alone."""
     if "type_defaults" in project:
         return
-    excluded = Policy.excluded_types(project.get("policy_id", Policy.PRESERVE_TRANSACTION))
+    policy_id = project.get("policy_id", Policy.PRESERVE_TRANSACTION)
+    excluded = {t for t in Policy.excluded_types(policy_id)}
     type_ids = {item.get("type") for key in ("candidates", "unlocated_candidates")
                 for item in project.get(key, []) if item.get("type")}
     type_ids.update(DEFAULT_TYPE_DEFAULTS)
     project["type_defaults"] = {
-        type_id: type_id not in excluded and _default_type_enabled(type_id)
+        type_id: (type_id not in excluded and not Policy.is_excluded(type_id, policy_id) and
+                  _default_type_enabled(type_id))
         for type_id in type_ids
     }
     pages = {page.get("page"): page for page in project.get("pages", [])}
@@ -579,7 +598,8 @@ def _migrate_legacy_type_state(project):
             resolution == "policy-excluded" or
             (item.get("status") == "keep" and resolution != "keep" and
              (item.get("policy_excluded") or
-              item.get("type") in policy_excluded_types)))
+              item.get("type") in policy_excluded_types or
+              Policy.is_excluded(item.get("type"), project.get("policy_id", Policy.PRESERVE_TRANSACTION)))))
         if legacy_policy_keep:
             item["status"] = "pending"
             if resolution == "policy-excluded":
@@ -599,7 +619,9 @@ def _migrate_legacy_type_state(project):
     for item in project.get("unlocated_candidates", []):
         if item.get("status") == "keep":
             if (item.get("policy_excluded") or
-                    item.get("type") in policy_excluded_types):
+                    item.get("type") in policy_excluded_types or
+                    Policy.is_excluded(item.get("type"),
+                                       project.get("policy_id", Policy.PRESERVE_TRANSACTION))):
                 item["status"] = "pending"
             else:
                 item["user_choice"] = "keep"
@@ -858,7 +880,7 @@ def _suggestions(doc, profile, terms, stored_numbers=None, pages=None,
                 if identity is None or identity not in located_occurrences:
                     candidate = _unlocated_candidate(
                         doc, item, occ, identity, occurrence_index, reason, numberer,
-                        item["type"] in Policy.excluded_types(policy_id))
+                        Policy.is_excluded(item["type"], policy_id))
                     if identity is None:
                         unlocated_without_location.append(candidate)
                     else:
@@ -877,7 +899,7 @@ def _suggestions(doc, profile, terms, stored_numbers=None, pages=None,
             bboxes = _range_bboxes(block, start, end, bbox, replaceable)
             entity_confidence = float(item["confidence"])
             ocr_confidence = block_confidence if is_ocr else None
-            excluded = item["type"] in Policy.excluded_types(policy_id)
+            excluded = Policy.is_excluded(item["type"], policy_id)
             auto_selected = (not excluded and
                              item["type"] != "NUMBER_CANDIDATE" and replaceable and
                              entity_confidence >= ENTITY_AUTO_SELECT_THRESHOLD and
@@ -916,16 +938,22 @@ def _suggestions(doc, profile, terms, stored_numbers=None, pages=None,
                         "selection_reason": selection_reason,
                         "geometry": geometry}
             candidate["review_reasons"] = _candidate_review_reasons(candidate)
-            duplicate = any(
-                existing["page"] == candidate["page"] and
+            # 文字层页面的 OCR 补扫会把同一处再读一遍，且可能读错字（Zoo → Z00），
+            # 只比值会留下两个叠在一起的框；同页同类型且位置重合即视为同一处，保留文字层结果。
+            duplicate_index = next((
+                index for index, existing in enumerate(out)
+                if existing["page"] == candidate["page"] and
                 existing["type"] == candidate["type"] and
-                _candidate_value_key(existing["value"], existing["type"]) == _candidate_value_key(candidate["value"], candidate["type"]) and
+                (_candidate_value_key(existing["value"], existing["type"]) ==
+                 _candidate_value_key(candidate["value"], candidate["type"]) or
+                 existing["source"] != candidate["source"]) and
                 _boxes_overlap(existing.get("bboxes", [existing.get("bbox")]),
                                candidate.get("bboxes", [candidate.get("bbox")]))
-                for existing in out
-            )
-            if not duplicate:
+            ), None)
+            if duplicate_index is None:
                 out.append(candidate)
+            elif out[duplicate_index]["source"] == "ocr" and candidate["source"] == "text":
+                out[duplicate_index] = candidate
             if identity is not None:
                 located_occurrences.add(identity)
                 unlocated_by_location.pop(identity, None)
@@ -1188,6 +1216,7 @@ def process(root, sid, generation=None, is_current=None, cancel=None):
                 include_stats=True, rules_snapshot=_rules_snapshot(root, sid, project))
             _preserve_review_decisions(candidates, unlocated, project)
             project["candidates"], project["numbers"], project["unlocated_candidates"] = candidates, numbers, unlocated
+            _register_policy_types(project)
             _auto_disposition(project)
             project["scan_stats"] = scan_stats
             project["english_dominant"] = D.is_english_dominant(doc.text)
@@ -1287,6 +1316,7 @@ def add_term(root, sid, term):
         _preserve_review_decisions(new, unlocated, p)
         p["terms"] = terms
         p["candidates"] = new
+        _register_policy_types(p)
         p["unlocated_candidates"] = unlocated
         p["numbers"] = numbers
         p["scan_stats"] = scan_stats
@@ -1326,6 +1356,7 @@ def sync_case(root, sid, terms, numbers):
                    p.get("unlocated_candidates", []) != unlocated)
         p["terms"] = merged
         p["candidates"] = candidates
+        _register_policy_types(p)
         p["unlocated_candidates"] = unlocated
         p["numbers"] = rows
         p["scan_stats"] = scan_stats

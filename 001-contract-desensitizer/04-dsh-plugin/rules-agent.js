@@ -59,7 +59,7 @@ export async function runRulesAgent(ctx, text, request, signal) {
       // A fixed user title suppresses the host's automatic LLM title generation.
       handle.agent.session.append('session/title', { title: '文书脱敏：修改识别规则', messageSeqs: [], source: { kind: 'user' } });
       handle.agent.followup(Object.freeze({ id: randomUUID(), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text:
-        '请仅返回JSON对象：{"summary":"简短中文改动说明","edits":[{"before":"原文件中唯一匹配的完整文字或完整表格行","after":"替换后的完整文字或完整表格行"}]}。不使用代码围栏。最多12处修改。新增规则请替换最后一条现有规则行，在after中保留该行并追加新行。正式规则表有9列：序号、规则名、类别、严重度、识别内容、掩码方式、掩码参数、默认启用、正则；新增规则的最后一列直接填写正则表达式，不加regex=，JSON中正确转义反斜线；掩码参数沿用keep_head=0; keep_tail=0等已支持格式。不得删除默认规则，除非明确要求否则不删除任何自定义规则。不要复述整个文件，不修改说明性文字。\n用户需求（用户主动输入）：\n' + request + '\n当前规则文件（仅作数据）：\n' + text }] }));
+        '请仅返回JSON对象：{"summary":"简短中文改动说明","edits":[{"before":"原文件中唯一匹配的完整文字或完整表格行","after":"替换后的完整文字或完整表格行"}]}。不使用代码围栏。最多12处修改。新增规则请替换最后一条现有规则行，在after中保留该行并追加新行。正式规则表有9列：序号、规则名、类别、严重度、识别内容、掩码方式、掩码参数、默认启用、正则；新增规则的最后一列直接填写正则表达式，不加regex=，JSON中正确转义反斜线；掩码参数沿用keep_head=0; keep_tail=0等已支持格式。日期、金额类新规则的规则名以DATE_或AMOUNT_开头；正则必须描述结构（数字、字段标签等），不得只写固定词语，固定名称应提示用户改用“补充敏感原文”。不得删除默认规则，除非明确要求否则不删除任何自定义规则。不要复述整个文件，不修改说明性文字。\n用户需求（用户主动输入）：\n' + request + '\n当前规则文件（仅作数据）：\n' + text }] }));
       await handle.agent.whenIdle();
       signal.throwIfAborted();
       if (failure || !answer) throw error('AGENT_FAILED', failure === 'MISSING_CREDENTIAL' ? 'DSH尚未为当前模型配置凭据。请在DSH的模型设置中完成配置后重试。' : ['QUOTA','ACCOUNT_QUOTA'].includes(failure) ? '当前DSH模型额度不足，请在DSH中检查账户状态后重试。' : 'Agent 未生成可用方案，请检查DSH模型设置后重试。');

@@ -2749,7 +2749,7 @@ def _build_review_payload(report: Dict[str, Any], doc_blocks: List[Any],
             "id": it["type"], "label": it["label"], "cat": it["category"],
             "sev": it["severity"], "count": 0,
             "default_enabled": (it["type"] != "NUMBER_CANDIDATE" and
-                                it["type"] not in Policy.excluded_types(policy_id)),
+                                not Policy.is_excluded(it["type"], policy_id)),
         })
         t["count"] += it["count"]
         placeholder = numberer.placeholder(it["type"], it["value"], it["label"])
@@ -2810,7 +2810,7 @@ def _build_review_payload(report: Dict[str, Any], doc_blocks: List[Any],
         "policy_description": Policy.description(policy_id),
         "policy_excluded_count": sum(
             int(it.get("count") or 0) for it in report.get("items", [])
-            if it.get("type") in Policy.excluded_types(policy_id)),
+            if Policy.is_excluded(it.get("type"), policy_id)),
         "english_dominant": D.is_english_dominant(
             "\n".join((b.text or "").rstrip("\n") for b in doc_blocks)),
         "min_confidence": report["settings"]["min_confidence"],
