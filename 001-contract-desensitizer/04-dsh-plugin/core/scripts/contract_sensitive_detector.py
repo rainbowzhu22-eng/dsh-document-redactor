@@ -563,6 +563,26 @@ def digits_of(value: str) -> str:
 
 _ZERO_WIDTH = {"\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\ufeff", "\u00ad", "\u2060"}
 _DASHES = {"\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212", "\uff0d", "\u30fc"}
+# macOS 宋体/苹方等字体导出的 PDF 文字层常把「一日月人身」写成外形相同的康熙部首
+# （U+2F00–2FD5，NFKC 可还原），简化字部首补充区（U+2E80–2EF3）NFKC 多数不还原，
+# 只收录可独立成字的常用项。不还原会让日期、证件标签和机构名左扩张整体失效。
+_CJK_RADICAL_SUPPLEMENT = {
+    "\u2ea0": "\u6c11", "\u2ec4": "\u897f", "\u2ec5": "\u89c1", "\u2ec6": "\u89d2", "\u2ec9": "\u8d1d",
+    "\u2ecb": "\u8f66", "\u2ed3": "\u957f", "\u2ed4": "\u95e8", "\u2ed8": "\u9752", "\u2ed9": "\u97e6",
+    "\u2eda": "\u9875", "\u2edb": "\u98ce", "\u2edc": "\u98de", "\u2edd": "\u98df", "\u2ee2": "\u9a6c",
+    "\u2ee5": "\u9c7c", "\u2ee6": "\u9e1f", "\u2ee7": "\u5364", "\u2ee8": "\u9ea6", "\u2ee9": "\u9ec4",
+    "\u2eea": "\u9efe", "\u2eec": "\u9f50", "\u2eee": "\u9f7f", "\u2ef0": "\u9f99", "\u2ef3": "\u9f9f",
+}
+
+
+def _unify_cjk_radical(ch: str) -> str:
+    if ch in _CJK_RADICAL_SUPPLEMENT:
+        return _CJK_RADICAL_SUPPLEMENT[ch]
+    if "\u2f00" <= ch <= "\u2fd5":
+        unified = unicodedata.normalize("NFKC", ch)
+        if len(unified) == 1:
+            return unified
+    return ch
 
 
 class NormalizedText:
@@ -585,6 +605,8 @@ class NormalizedText:
                 ch = "-"
             elif ch in ("\t", "\r"):
                 ch = " "
+            elif 0x2E80 <= o <= 0x2FD5:
+                ch = _unify_cjk_radical(ch)
             chars.append(ch)
             idx.append(i)
         self.raw = raw
@@ -1836,6 +1858,15 @@ _ACTION_CONTEXT_NAME_RE = re.compile(
     r"[\s\u00a0\u3000]{0,3}[\u4e00-\u9fff](?:[\s\u00a0\u3000]{0,3}[\u4e00-\u9fff])?)"
     r"\s*(?P<tail>" + "|".join(sorted(_NAME_ACTION_TAILS, key=len, reverse=True)) + r")"
 )
+# 当事人列表常写「4. 宋学璞（与实际控制人合称为“创始人”），身份证号码：…」——
+# 没有「姓名：」之类的标签，标签路径整条不触发。限定为「行首编号 + 姓名 +
+# 可选括号定义 + 紧跟证件号字段」，条款编号后的普通行文没有证件号，不会命中。
+_PARTY_LIST_NAME_RE = re.compile(
+    r"(?m)^[ \t]*(?:\(?\d{1,2}[).．、]|[一二三四五六七八九十]{1,3}[、.．])[ \t]*"
+    r"(?P<name>" + _SURNAME_PATTERN + r"[\u4e00-\u9fff]{1,2})"
+    r"(?=[ \t]*(?:\([^()\n]{1,40}\))?[ \t]*[，,：:;；]?[ \t]*"
+    r"(?:身份证|居民身份证|证件号|护照号))"
+)
 
 
 def _iter_name_runs(text: str, pos: int) -> List[Tuple[int, int, str]]:
@@ -1996,6 +2027,19 @@ class PersonNameDetector:
                 out.append(RawMatch("PERSON_NAME", start, end, 0.78,
                                     ["受控律师称谓语境", "姓氏及姓名边界校验"], value,
                                     {"lawyer_context": True}))
+        for match in _PARTY_LIST_NAME_RE.finditer(text):
+            name = match.group("name")
+            if name in NAME_STOPWORDS or any(word in name for word in ROLE_WORDS):
+                continue
+            start, end = match.span("name")
+            if any(item.start <= start and end <= item.end for item in out):
+                continue
+            # 0.82 ≥ 0.7：进入 _propagate_names，正文其它无标签位置一并标出。
+            out.append(RawMatch(
+                "PERSON_NAME", start, end, 0.82,
+                ["当事人列表中姓名后紧跟证件号字段", "姓氏命中常见姓氏表"], name,
+                {"party_list": True},
+            ))
         for match in _ACTION_CONTEXT_NAME_RE.finditer(text):
             raw_name = match.group("raw")
             name = re.sub(r"\s+", "", raw_name)
@@ -3107,6 +3151,32 @@ def _org_strip_narrative_prefix(value: str, suffix: str) -> str:
     return value[p:]
 
 
+# 条款行文 + 通用后缀的误报（实测增资协议）：
+#   「依法设立并有效存续的有限责任公司」「在北京市注册成立的有限合伙企业」——定语从句；
+#   「间接持有任何集团公司」「应当促使各集团公司」「也未运营任何办事处」——限定词收尾；
+#   「也不得诱导集团公司」——情态/否定 + 动作。
+# 刻意不收单字「的」「未」「应」：真实名称有「未来科技」「应用材料（中国）」等。
+_ORG_CLAUSE_ATTR_RE = re.compile(r"(?:存续|成立|设立|注册|登记|经营)的")
+_ORG_CLAUSE_DET_RE = re.compile(r"(?:任何|各|该|其他|其它|所有|全部|每一|每个)$")
+_ORG_CLAUSE_MODAL_RE = re.compile(
+    r"(?:不得|未|应当|须)(?:直接|间接)?(?:诱导|促使|持有|运营|设立|投资|控制)")
+
+
+def _org_body_is_clause(body: str) -> bool:
+    return bool(_ORG_CLAUSE_ATTR_RE.search(body) or _ORG_CLAUSE_DET_RE.search(body) or
+                _ORG_CLAUSE_MODAL_RE.search(body))
+
+
+_PARTY_LIST_PREFIX_RE = re.compile(
+    r"[ \t]*(?:\(?\d{1,2}[).．、]|[一二三四五六七八九十]{1,3}[、.．])[ \t]*")
+
+
+def _org_in_party_list_line(text: str, start: int) -> bool:
+    """机构名是否位于以编号开头的当事人列表行首（编号与名称之间只有空白）。"""
+    line_start = text.rfind("\n", 0, start) + 1
+    return bool(_PARTY_LIST_PREFIX_RE.fullmatch(text[line_start:start]))
+
+
 def _is_nonparty_org(value: str) -> bool:
     """候选若以公权力机关通用名结尾，则不是合同当事人，不脱敏。"""
     v = (value or "").strip()
@@ -3318,6 +3388,49 @@ def _expand_org_left(text: str, end: int) -> Tuple[int, str]:
     return start, text[start:end].strip(" ·-&\"'")
 
 
+_REGION_WRAP_RE: Optional["re.Pattern[str]"] = None
+
+
+def _join_region_wrapped_lines(text: str) -> Tuple[str, Optional[List[int]]]:
+    """去掉「…字号(地名)」行尾与下一行行首之间的换行，返回 (拼接串, 原文下标表)。
+
+    左扩张不跨换行，「爱宠优（北京）／科贸有限公司」原先只识别到第二行，
+    简称「爱宠优」也因与残缺全称不同字而被拒。拼接后按同一行写法走完全相同的
+    边界与叙述剔除，再按原文换行拆回两段定位，不放宽任何既有规则。
+    """
+    global _REGION_WRAP_RE
+    if _REGION_WRAP_RE is None:
+        regions = "|".join(re.escape(r) for r in ORG_REGION_PREFIXES_SORTED)
+        _REGION_WRAP_RE = re.compile(
+            r"[\u4e00-\u9fffA-Za-z0-9]\((?:" + regions + r")\)([ \t]*\n[ \t]*)"
+            r"(?=[\u4e00-\u9fffA-Za-z0-9])")
+    cuts = [m.span(1) for m in _REGION_WRAP_RE.finditer(text)]
+    if not cuts:
+        return text, None
+    parts: List[str] = []
+    index: List[int] = []
+    pos = 0
+    for s, e in cuts:
+        parts.append(text[pos:s])
+        index.extend(range(pos, s))
+        pos = e
+    parts.append(text[pos:])
+    index.extend(range(pos, len(text)))
+    return "".join(parts), index
+
+
+def _split_joined_span(index: List[int], start: int, end: int) -> List[Tuple[int, int]]:
+    """拼接串区间 → 原文中按换行拆开的若干连续区间。"""
+    segments: List[Tuple[int, int]] = []
+    seg_start = index[start]
+    for k in range(start + 1, end):
+        if index[k] != index[k - 1] + 1:
+            segments.append((seg_start, index[k - 1] + 1))
+            seg_start = index[k]
+    segments.append((seg_start, index[end - 1] + 1))
+    return segments
+
+
 class OrgNameDetector:
     type_id = "ORG_NAME"
 
@@ -3342,7 +3455,8 @@ class OrgNameDetector:
     def run(self, ctx: ScanContext) -> List[RawMatch]:
         out: List[RawMatch] = []
         seen: Dict[Tuple[int, int], bool] = {}
-        text = ctx.text
+        text, join_index = _join_region_wrapped_lines(ctx.text)
+        jctx = ScanContext(ctx.nt, text, ctx.blocks) if join_index else ctx
         for m in ORG_SUFFIX_RE.finditer(text):
             suffix = m.group(0)
             start, value = _expand_org_left(text, m.end())
@@ -3363,6 +3477,11 @@ class OrgNameDetector:
                     start += len(p)
                     value = value[len(p):]
                     break
+            # 去掉当事人列表的编号前缀（PDF 拼行常把「5. 北京…」压成「5.北京…」）
+            m_enum = re.match(r"^\(?\d{1,2}[).．、](?=[\u4e00-\u9fff])", value)
+            if m_enum and len(value) - m_enum.end() >= 4:
+                start += m_enum.end()
+                value = value[m_enum.end():]
             # 去掉「数字 + 号」前缀（门牌号不是机构名的一部分：88 号曜境中心 → 曜境中心）
             m2 = re.match(r"^\d+\s*号", value)
             if m2 and len(value) - m2.end() >= 4:
@@ -3402,6 +3521,8 @@ class OrgNameDetector:
             # （实测「目前分公司」「检查分公司」「2024年10月23日分公司」「督促分公司」等）
             if suffix in _STRONG_SET and _org_is_no_anchor_narrative(body):
                 continue
+            if _org_body_is_clause(body):
+                continue
             # 结构性剥离叙述前缀（按区划名右对齐重切；不满足条件则原样保留）
             _nv = _org_strip_narrative_prefix(value, suffix)
             if _nv != value:
@@ -3439,7 +3560,7 @@ class OrgNameDetector:
                 reasons.append("4字短名称命中主体标签")
             elif is_short and entity_action:
                 reasons.append("4字短名称命中机构行为结构")
-            if ctx.has_kw(start, m.end(), ("甲方", "乙方", "丙方", "供方", "需方", "卖方", "买方", "签约", "受托方", "委托方")):
+            if jctx.has_kw(start, m.end(), ("甲方", "乙方", "丙方", "供方", "需方", "卖方", "买方", "签约", "受托方", "委托方")):
                 conf += 0.06
                 reasons.append("位于合同主体上下文")
             if is_short and entity_action and not party_label:
@@ -3447,8 +3568,19 @@ class OrgNameDetector:
             if _org_span_needs_review(text, start, value, suffix):
                 conf = min(conf, 0.42)
                 reasons.append(ORG_SPAN_REVIEW_REASON)
-            out.append(RawMatch("ORG_NAME", start, m.end(), min(conf, 0.95), reasons, value,
-                                {"suffix": suffix}))
+            segments = (_split_joined_span(join_index, start, m.end())
+                        if join_index else [(start, m.end())])
+            if len(segments) > 1:
+                # 跨行全称：每段各自定位，代表值共用拼接后的原文全称（同组同编号）。
+                full_raw = "".join(ctx.nt.raw_slice(s, e) for s, e in segments)
+                for seg_start, seg_end in segments:
+                    out.append(RawMatch("ORG_NAME", seg_start, seg_end, min(conf, 0.95),
+                                        reasons + ["机构全称跨行，按整体识别"], value,
+                                        {"suffix": suffix, "cross_line_value": full_raw}))
+                continue
+            out.append(RawMatch("ORG_NAME", segments[0][0], segments[0][1], min(conf, 0.95),
+                                reasons, value, {"suffix": suffix}))
+        text = ctx.text
         for start, end, value, kind in _english_org_candidates(text):
             if kind == "association":
                 has_party_context = bool(ctx.has_kw(
@@ -5230,21 +5362,27 @@ class DetectorEngine:
                 for dm in _ORG_NO_KEY_ALIAS_RE.finditer(tail):
                     alias = dm.group(1)
                     left = text[:om.end + dm.start()]
-                    hit = om.value if left.endswith(om.value) else ""
+                    anchor = (text[om.start:om.end] if om.attrs.get("cross_line_value")
+                              else om.value)
+                    hit = om.value if left.endswith(anchor) else ""
                     if not hit:
                         # 容许夹 ≤2 个连接词（「的」「与」「和」…）
                         cut = left
                         for _ in range(2):
                             if cut and cut[-1] in _ORG_ALIAS_GLUE:
                                 cut = cut[:-1]
-                                if cut.endswith(om.value):
+                                if cut.endswith(anchor):
                                     hit = om.value
                                     break
                             else:
                                 break
                     if not hit:
                         continue                                   # ① 未紧邻本机构全称
-                    if not all(ch in hit for ch in alias):
+                    if not all(ch in hit for ch in alias) and not (
+                            # 当事人列表里紧贴全称的引号简称（万物一期…（“万物资本”））：
+                            # 只放宽到「简称前两字即字号前两字」，其余护栏不变。
+                            len(alias) >= 3 and _org_in_party_list_line(text, om.start) and
+                            org_core(_norm_key(hit))[:2] == alias[:2]):
                         continue                                   # ② 字符非全含
                     if _is_nonparty_alias(alias):
                         continue                                   # ③ 文件 / 条款 / 期限 / 角色词
@@ -5367,7 +5505,8 @@ class DetectorEngine:
                 continue
             if _norm_key(raw_value) in {_norm_key(a) for a in st.allowlist}:
                 continue
-            m.value = raw_value
+            # 跨行机构全称的各段共用拼接后的全称，才能同组、同编号。
+            m.value = m.attrs.get("cross_line_value") or raw_value
             filtered.append(m)
 
         # 2.5) 真空区：表格上下文过滤
