@@ -2981,6 +2981,8 @@ ORG_LEFT_PHRASES: Tuple[str, ...] = (
     "原告", "被告", "上诉人", "被上诉人", "申请人", "被申请人", "再审申请人",
     "第三人", "委托代理人", "法定代表人", "法定代理人", "被执行人",
     "位于", "坐落于", "地址为", "名称为",
+    # 合同角色引导语不是公司字号；不把单字「之」或「关联方」设为全局切点。
+    "投资方之关联方", "投资方的关联方",
 )
 
 # 机构名前残留的指代词/量词（按 2 字一组，便于一次性剔除「本人」「该公」「号院」等错误前缀）
@@ -3429,6 +3431,44 @@ def _split_joined_span(index: List[int], start: int, end: int) -> List[Tuple[int
             seg_start = index[k]
     segments.append((seg_start, index[end - 1] + 1))
     return segments
+
+
+def _trim_org_conjunction_spans(matches: List[RawMatch], ctx: ScanContext) -> None:
+    """Separate declared aliases from an independently known full name.
+
+    Only an explicit alias definition and an already detected right-hand name
+    justify this cut. Conjunctions inside an independently declared legal name
+    remain part of that name.
+    """
+    orgs = [m for m in matches if m.type_id == "ORG_NAME" and m.confidence >= 0.5]
+    known = {m.value for m in orgs}
+    aliases, protected = set(), set()
+    definition = re.compile(
+        r"^[ \t]*[（(]\s*(?:以下|下)?\s*(?:简称|称)\s*[:：]?\s*[「“\"'‘]?"
+        r"([\u4e00-\u9fffA-Za-z0-9]{2,20})\s*[」”\"'’]?\s*[)）]")
+    for org in orgs:
+        match = definition.match(ctx.text[org.end:org.end + 80])
+        if match and not _is_nonparty_alias(match.group(1)):
+            aliases.add(match.group(1))
+            protected.add(org.value)
+    for org in orgs:
+        if org.value in protected:
+            continue
+        for alias in sorted(aliases, key=len, reverse=True):
+            size = len(alias) + 1
+            if (org.value.startswith(alias) and len(org.value) > size and
+                    org.value[len(alias)] in "与和及" and org.value[size:] in known):
+                prefix = org.value[:size]
+                if ctx.text.startswith(prefix, org.start):
+                    org.start += size
+                elif not org.attrs.get("cross_line_value"):
+                    continue
+                org.value = org.value[size:]
+                if org.attrs.get("cross_line_value"):
+                    original = NormalizedText(org.attrs["cross_line_value"])
+                    org.attrs["cross_line_value"] = original.raw_slice(size, len(original.norm))
+                org.reasons.append("显式简称与独立全称之间的连接词不属于机构名")
+                break
 
 
 class OrgNameDetector:
@@ -3973,6 +4013,17 @@ def _amount_syntax_valid(value: str) -> Optional[bool]:
     return bool(match)
 
 
+LITIGATION_CASE_PATTERN = (
+    r"[（(][ \t\u3000]*(?:19|20)\d{2}[ \t\u3000]*[)）][ \t\u3000]*"
+    r"(?:最高法|[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼军])"
+    r"[ \t\u3000]*(?:\d[ \t\u3000]*){0,4}"
+    r"(?:民初|民终|民申|民再|民特|民督|民撤|民催|民辖终|民辖|民赔|"
+    r"刑初|刑终|刑申|刑再|行初|行终|行申|行再|行赔初|行赔终|"
+    r"破申|破终|破|强清申|强清|执恢|执保|执异|执复|执监|执|财保|证保|诉前调)"
+    r"[ \t\u3000]*(?:\d[ \t\u3000]*){1,8}号"
+)
+
+
 def build_detectors(custom_specs: Sequence[RegexSpec] = ()) -> List[Any]:
     specs: List[RegexSpec] = [
         # ---------------- 身份证 ----------------
@@ -4367,6 +4418,10 @@ def build_detectors(custom_specs: Sequence[RegexSpec] = ()) -> List[Any]:
             ok_reason="执业号标签命中", weak_reason="执业号标签命中但格式可疑",
         ),
         # ---------------- 案件号 / 公文字号 ----------------
+        RegexSpec(
+            "CASE_NO", LITIGATION_CASE_PATTERN,
+            conf_ok=0.85, conf_weak=0.85,
+        ),
         RegexSpec(
             "CASE_NO",
             r"[（(]\s*(?:19|20)\d{2}\s*[)）][\u4e00-\u9fff]{1,10}?\d{1,8}号",
@@ -5120,6 +5175,8 @@ class DetectorEngine:
                                                      0.76, ["批注署名结构识别"], norm_block[person_start:person_end]))
             norm_cursor = block_end + 1
 
+        if "ORG_NAME" in self.active_types:
+            _trim_org_conjunction_spans(raw_matches, ctx)
         if self.settings.propagate_names:
             raw_matches.extend(self._propagate_names(raw_matches, ctx))
             if "ORG_NAME" in self.active_types:

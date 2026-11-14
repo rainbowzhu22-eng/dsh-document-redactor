@@ -12,6 +12,7 @@ regex>=2024.11.6        # 用户自定义正则的有界执行（单次匹配超
 reportlab>=4.0.0        # 输出 PDF：合成新页 + 写掩码文字
 pypdfium2>=4.0.0        # PDF 栅格化（用于真删文本层，是 PDF 脱敏的关键步骤）
 Pillow>=10.0.0          # 在栅格化位图上画白块
+numpy>=1.26.0          # 本机印章、照片与手写字迹候选检测
 
 # Windows 扫描页：wheel 自带中英 OCR 默认模型，安装完成后运行时不联网。
 rapidocr==3.9.2; sys_platform == "win32"

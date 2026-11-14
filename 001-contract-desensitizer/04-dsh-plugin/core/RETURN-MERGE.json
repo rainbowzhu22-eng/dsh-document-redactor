@@ -4,8 +4,8 @@
   "baseline_manifest_sha256": "3c2708d865bb2aaed69a799811f9c0bdd43d1eec7c4c655f4ae27af79b361e83",
   "return_zip_sha256": "aa40bebaa418db68be5cf459bdf5792ef97830de6bd1c847475516f7cb40d191",
   "return_tgz_sha256": "622863226ba204c08e28c20a31213ae36ee5499d408342009972df711138de65",
-  "local_candidate_version": "1.4.2",
-  "source_status": "1.4.2 local candidate (from 1.4.1 tree): recording-feedback recognition, policy and PDF review fixes; directed tests and one plugin regression; not packaged or published",
+  "local_candidate_version": "1.4.3-dev.2",
+  "source_status": "1.4.3-dev.2 REDACT-ITER-023@1: constructed app integration and 46 Python/42 Node regression baseline passed; subsequent pointer-only UI recovery validated by scoped syntax/event test and the same Mac Chrome journey; backend/recognition unchanged after baseline; not installed or published",
   "preserved": [
     "original R99 provenance, rule template, license and engine selftest entrypoints",
     "confirmed DSH interface and amount/date policy selection"
@@ -26,7 +26,9 @@
     "1.4.2: party-list person names followed by an ID field; cross-line org names after a region parenthesis; party-list quoted aliases; enumeration prefix stripped.",
     "1.4.2: reject clause text before generic org suffixes (attributive, determiner, modal verb).",
     "1.4.2: DATE_/AMOUNT_/MONEY_ custom rules follow the preserve policy; Agent proposal check rejects bare-word and unprefixed date/amount rules.",
-    "1.4.2: OCR supplement deduplicated against text-layer candidates by position; thumbnail retry, decoupled export preview, synced pane scrolling."
+    "1.4.2: OCR supplement deduplicated against text-layer candidates by position; thumbnail retry, decoupled export preview, synced pane scrolling.",
+    "1.4.3-dev: image-region candidates require disposition; seal and handwriting fixes; explicit image-detection errors and recovery; bounded spaced case numbers and cross-page verification.",
+    "REDACT-ITER-023@1: narrative and declared-alias conjunction boundaries; adjacent-text-aware erase padding; coarse boxes containing body require manual disposition."
   ],
   "files": {
     "SKILL.md": "880100f70a0662280e18a609d3486c70c37a5e6b4fdf67b2a38f4954d7ea98bd",
@@ -38,18 +40,26 @@
     "scripts/contract_docx_comments.py": "2f3c17fdeaa136bf1f803de5f57334eb4bc93dcf3c3f820eb82b8f3675f45f32",
     "scripts/contract_docx_revisions.py": "49141f615439c31671f4144a64529135fd60319745c1769a805e6a032bfa2b92",
     "scripts/contract_pdf_ocr_worker.py": "1c58157eeabba24d76abfe0ad3de3c9cded18c76a41efbdf67ab891018e12bef",
-    "scripts/contract_pdf_project.py": "8a7c3a96da513181af616b3000f8f717bb423fbd4d83ad541b9551ff54bf43cb",
-    "scripts/contract_pdf_ui.py": "474cab18bd50b7543ed4653a3ede909db3627908e5d65c560023840c8dd4975f",
+    "scripts/contract_pdf_project.py": "6ebb763169a67fae4ee247a54d7a613629db8c0b7999aafadd7cb84efa123199",
+    "scripts/contract_pdf_ui.py": "9b23a9c1b00c1f915f92a9baf5262bbd5f699f0f63c42f6d70aedbdd718a410d",
     "scripts/contract_pdf_win_ocr.py": "3d5b4fcd19fbfed291d9b3db4e961f9b4f28289ced770e1d24d83637386d8f83",
     "scripts/contract_redaction_policy.py": "a446588d551e86d597503c796a28c582bc7a6c40dca0945d5104bfdc1bbd3349",
     "scripts/contract_redactor.py": "29e67d5f485347f5f3350b43767eee78a1dca9a5e0bbe0620d4324a5662818f8",
     "scripts/contract_review_ext.py": "26c933ca7dd4bbc179c7defdc8796e3ea6f2134ac5a211a3c186cead29c580e0",
-    "scripts/contract_sensitive_detector.py": "37952fcb44389b957826dd7146a071971a9f63353ab0a802e403119fafd3cc81",
+    "scripts/contract_sensitive_detector.py": "5242dfc9dce485694b363c8db77d02f75878d88722f3f0d97447793ab74d01b0",
     "scripts/contract_ui_notices.py": "a2ea94207891cc8449b24eb75027b9a8899a38b062ba1f2f606cf47af3832e5d",
     "scripts/launcher/README.md": "be24deca73ed71da7eea3133a394ecd921b24d0d4e2c79e43f9ac0e11743b209",
     "scripts/launcher/start.py": "bc20f86c3c8e3758eb9ab0d71e280ad62eda7f88e65f9300545d233cd78d9f48",
     "scripts/pdf_vision_ocr": "85a495d25ba90f1a9c5cddd9e40d29ee3ef6e71b3389c2bc1ebb15c1146495aa",
-    "scripts/requirements.txt": "b84a52be8309a91bb672dc2f44ff1b2e85e15c622b8d629df8c8cc9e13cc8441"
+    "scripts/requirements.txt": "87e7bac7d343c549e4a9659fc1e8e35cdc898912963a5da6779cf4540ea6c604",
+    "scripts/contract_pixel_regions.py": "a3ffe848c1f22d198925af623daf6a866a7ebf7f9c81675131bb91e79284ee36",
+    "scripts/contract_pixel_seals.py": "09873a5a2187aa0077c4bb5e87776f5171193a44006323c4e0c4ffc21577b85a",
+    "scripts/contract_pixel_extra.py": "033d8d7c70aeb71f6a7a02ad2226f551ee29c0800d874d852d72232c72e2e2da"
   },
-  "adapter_fix": "client.js: allow native mapping confirmation dialogs in the local processing iframe"
+  "adapter_fix": "client.js: allow native mapping confirmation dialogs in the local processing iframe",
+  "contribution_20261112": {
+    "author": "楼军有",
+    "archive_sha256": "b645559e41e2d91c0f533c8ea627a8b264c4f8c3054ade0706644dc6868fc513",
+    "integration": "pure image candidates only; original file-writing entrypoints excluded"
+  }
 }

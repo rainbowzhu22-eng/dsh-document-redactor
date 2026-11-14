@@ -78,7 +78,7 @@ class InstallationCompatibility(unittest.TestCase):
         self.assertIn(b'coding: utf-8', first_lines)
         text = raw.decode('utf-8')
         self.assertIn('rapidocr==3.9.2', text)
-        self.assertEqual(len([x for x in text.splitlines() if x.strip() and not x.startswith('#')]), 15)
+        self.assertEqual(len([x for x in text.splitlines() if x.strip() and not x.startswith('#')]), 16)
 
     def test_unapproved_download_source_rejected_before_environment_changes(self):
         with patch.object(runtime.subprocess, 'run') as run:
@@ -192,7 +192,7 @@ class RuleReloadCompatibility(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory(prefix='redactor140-rule-reload-') as folder:
                 root=Path(folder)
-                rules=(ROOT/'core/references/脱敏规则清单.md').read_text()
+                rules=(ROOT/'package/core/references/脱敏规则清单.md').read_text()
                 anchor=next(line for line in rules.splitlines() if line.startswith('| 35 | ABA_ROUTING'))
                 rules=rules.replace(anchor,anchor+'\n| 36 | FY_PUBLIC | 自定义 | 中 | 公开样式 | 替换为代号 | keep_head=0; keep_tail=0 | 是 | FY-PUBLIC-[A-Z]{4} |')
                 path=root/'rules.md';path.write_text(rules)

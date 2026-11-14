@@ -5,6 +5,10 @@ The original source archive SHA-256 and hashes are preserved in core/BASELINE.js
 The return provenance and merged-source hashes are in core/RETURN-MERGE.json.
 DeepSeek Harness is the separate host; this package does not redistribute it.
 
+Image-region detection is adapted from 楼军有's 2026-11-12 contribution.
+Changes include corrected coordinates and seal filtering, explicit review,
+failure handling, and integration with the existing local PDF export pipeline.
+
 The dynamic community QR controller is adapted from dsh-dpia-workbench
 (https://github.com/The-Data-Galaxy/dsh-dpia-workbench), licensed under
 Apache License 2.0. The original license is preserved in licenses/Apache-2.0.txt.
