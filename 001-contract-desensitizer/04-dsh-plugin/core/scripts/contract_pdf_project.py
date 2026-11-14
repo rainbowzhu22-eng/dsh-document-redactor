@@ -19,7 +19,7 @@ import contract_review_ext as R
 import contract_redaction_policy as Policy
 
 SCALE = 2.0
-PDF_BLOCK_VERSION = 7
+PDF_BLOCK_VERSION = 9
 OCR_COLUMN_GAP = 18.0
 LOCKS = {}
 # These thresholds describe separate decisions. Equal initial values do not
@@ -36,6 +36,8 @@ DEFAULT_TYPE_DEFAULTS = {"AMOUNT": True, "DATE": True,
 
 
 def _default_type_enabled(type_id):
+    if type_id in {"SEAL_IMAGE", "PHOTO_IMAGE", "SIGNATURE_IMAGE", "FINGERPRINT_IMAGE", "IDENTITY_IMAGE", "CASE_FRAGMENT_IMAGE"}:
+        return False
     return DEFAULT_TYPE_DEFAULTS.get(type_id, True)
 
 
@@ -521,8 +523,14 @@ def _candidate_render_plan(item, page):
     """统一渲染计划：有真实页面框即可绘制，分数只影响处理模式与提示，
 有效框不排除出渲染。replace=精确改字；box-replace=按真实框
     擦写代号、放不下则纯遮盖；none=缺少有效坐标，留人工。"""
+    if item.get("scope_review_required"):
+        return {"mode": "none", "boxes": []}
     boxes = item.get("bboxes") or ([item.get("bbox")] if item.get("bbox") else [])
     if not page or not boxes or any(not _valid_review_box(box, page) for box in boxes):
+        return {"mode": "none", "boxes": []}
+    if item.get("erase_bboxes") is not None and (
+            len(item["erase_bboxes"]) != len(boxes) or
+            any(not _valid_review_box(box, page) for box in item["erase_bboxes"])):
         return {"mode": "none", "boxes": []}
     mode = "replace" if _candidate_direct_replaceable(item) else "box-replace"
     return {"mode": mode, "boxes": [list(box) for box in boxes]}
@@ -636,6 +644,8 @@ def _auto_disposition(project):
     applied = set(project.get("auto_applied_ids") or [])
     snapshot = None
     for item in project.get("candidates", []):
+        if item.get("source") == "pixel" or item.get("scope_review_required"):
+            continue  # 图像启发式只给候选，不能因为有框就当成用户已确认。
         if item.get("id") in applied:
             continue
         if "type_defaults" in project:
@@ -683,6 +693,8 @@ def _auto_disposition(project):
 
 def _candidate_review_reasons(item):
     reasons = _score_review_reasons(item)
+    if item.get("scope_review_required"):
+        reasons.append("scope_overlaps_body")
     if _candidate_requires_manual_box(item):
         reasons.append("manual_box_required")
     failure = item.get("failure_reason")
@@ -755,6 +767,39 @@ def _range_bboxes(block, start, end, fallback, replaceable):
              max(box.x1 for box in row["boxes"]),
              max(box.bottom for box in row["boxes"])]
             for row in rows]
+
+
+def _range_erase_bboxes(block, start, end, boxes, page_size, pad=3):
+    """Keep available erase padding, but never expand into neighbouring text."""
+    width, height = page_size
+    selected = [b for b in block.word_boxes if b.end > start and b.start < end
+                and block.text[b.start:b.end].strip()]
+    unsafe = any((b.start < start and block.text[b.start:start].strip()) or
+                 (b.end > end and block.text[end:b.end].strip()) for b in selected)
+    neighbours = [b for b in block.word_boxes if (b.end <= start or b.start >= end)
+                  and block.text[b.start:b.end].strip()]
+    masks = []
+    for x0, y0, x1, y1 in boxes:
+        left, top, right, bottom = max(0, x0 - pad), max(0, y0 - pad), min(width, x1 + pad), min(height, y1 + pad)
+        for other in neighbours:
+            same_row = min(y1, other.bottom) - max(y0, other.top) > 0.01
+            same_column = min(x1, other.x1) - max(x0, other.x0) > 0.01
+            if same_row:
+                if other.x1 <= x0 + 0.01:
+                    left = max(left, other.x1)
+                elif other.x0 >= x1 - 0.01:
+                    right = min(right, other.x0)
+                else:
+                    unsafe = True
+            if same_column:
+                if other.bottom <= y0 + 0.01:
+                    top = max(top, other.bottom)
+                elif other.top >= y1 - 0.01:
+                    bottom = min(bottom, other.top)
+                elif not same_row:
+                    unsafe = True
+        masks.append([left, top, right, bottom])
+    return masks, bool(unsafe)
 
 
 def _candidate_value_key(value, type_id=None):
@@ -897,10 +942,12 @@ def _suggestions(doc, profile, terms, stored_numbers=None, pages=None,
             if item["type"] == "PERSON_NAME" and not re.search(r"[A-Za-z]", item["value"]):
                 value = re.sub(r"\s+", "", item["value"])
             bboxes = _range_bboxes(block, start, end, bbox, replaceable)
+            erase_bboxes, scope_review = _range_erase_bboxes(
+                block, start, end, bboxes, limits[occ["page"]])
             entity_confidence = float(item["confidence"])
             ocr_confidence = block_confidence if is_ocr else None
             excluded = Policy.is_excluded(item["type"], policy_id)
-            auto_selected = (not excluded and
+            auto_selected = (not excluded and not scope_review and
                              item["type"] != "NUMBER_CANDIDATE" and replaceable and
                              entity_confidence >= ENTITY_AUTO_SELECT_THRESHOLD and
                              (not is_ocr or (ocr_confidence is not None and
@@ -924,6 +971,7 @@ def _suggestions(doc, profile, terms, stored_numbers=None, pages=None,
                         "value": value,
                         "placeholder": numberer.placeholder(item["type"], item["value"], item["label"]),
                         "bbox": bbox, "bboxes": bboxes, "replaceable": replaceable,
+                        "erase_bboxes": erase_bboxes, "scope_review_required": scope_review,
                         "selected": auto_selected,
                         "machine_selected": auto_selected,
                         "policy_excluded": excluded,
@@ -958,6 +1006,10 @@ def _suggestions(doc, profile, terms, stored_numbers=None, pages=None,
                 located_occurrences.add(identity)
                 unlocated_by_location.pop(identity, None)
     unlocated = list(unlocated_by_location.values()) + unlocated_without_location
+    for page in pages or []:
+        out.extend(json.loads(json.dumps(page.get("pixel_candidates", []))))
+    import contract_pixel_regions as Pixels
+    out.extend(Pixels.cross_page_cases(pages or [], D.LITIGATION_CASE_PATTERN))
     if include_stats:
         return out, numbers, unlocated, scan_stats
     return out, numbers, unlocated
@@ -1177,6 +1229,22 @@ def process(root, sid, generation=None, is_current=None, cancel=None):
                     page_state["dropped_lines"] = 0
                     page_state["ocr_line_stats"] = page_line_stats
             # 诊断只保存在本机会话私有目录，供逐位置核查，不写入通用日志。
+            try:
+                import contract_pixel_regions as Pixels
+                page_state["pixel_candidates"] = Pixels.detect(
+                    img_path, lines, page_no, image.width / SCALE, image.height / SCALE)
+                page_state["pixel_case_edges"] = Pixels.case_edges(
+                    lines, image.width / SCALE, image.height / SCALE)
+                page_state["pixel_detection"] = "complete"
+                page_state["pixel_error"] = ""
+                if page_state.get("ocr") == "failed" or page_state.get("ocr_supplement") == "failed":
+                    page_state["pixel_detection"] = "partial"
+                    page_state["pixel_error"] = "文字识别失败，签名标签与身份证识别未完成"
+            except Exception as exc:
+                page_state["pixel_candidates"] = []
+                page_state["pixel_case_edges"] = {}
+                page_state["pixel_detection"] = "failed"
+                page_state["pixel_error"] = str(exc)[:240]
             _atomic(cache.with_suffix(".ocr.json"), {"lines": lines})
             page_state["ocr_retried_lines"] = sum(bool(x.get("retry_status")) for x in lines)
             page_state["ocr_improved_lines"] = sum(x.get("retry_status") == "improved" for x in lines)
@@ -1498,6 +1566,8 @@ def update(root, sid, req):
             # 识别失败的页必须由用户显式勾选「我已检查该页预览，确认无未处理的敏感信息」才放行导出。
             if req.get("manual_confirm") is True:
                 page["manual_confirm"] = True
+            elif req.get("manual_confirm") is False:
+                page["manual_confirm"] = False
         elif action == "candidate":
             item = next((x for x in p["candidates"] if x["id"] == req.get("id") and x["page"] == page_no), None)
             if item is None or not isinstance(req.get("selected"), bool):
@@ -1718,10 +1788,22 @@ def _redact_image(image, candidates, regions):
     from PIL import Image, ImageDraw
     draw = ImageDraw.Draw(image)
     # Erase all selected text before drawing any replacement. Overlapping hits stay erased.
-    replacements = []
+    replacements, image_boxes = [], []
     for item in candidates:
+        if item.get("scope_review_required"):
+            continue
         source_boxes = item.get("bboxes") or [item["bbox"]]
-        boxes = [_clean_box(box, image.width, image.height) for box in source_boxes]
+        if item.get("erase_bboxes") is not None:
+            # Character bounds are half-open; PIL rectangles include their end pixel.
+            boxes = [(max(0, math.ceil(b[0] * SCALE)), max(0, math.ceil(b[1] * SCALE)),
+                      min(image.width - 1, math.ceil(b[2] * SCALE) - 1),
+                      min(image.height - 1, math.ceil(b[3] * SCALE) - 1))
+                     for b in item["erase_bboxes"]]
+        else:
+            boxes = [_clean_box(box, image.width, image.height) for box in source_boxes]
+        if item.get("source") == "pixel":
+            image_boxes.extend(boxes)
+            continue
         for box in boxes:
             draw.rectangle(box, fill="white")
         if boxes:
@@ -1735,6 +1817,8 @@ def _redact_image(image, candidates, regions):
             draw.text(position, label, fill="black", font=font)
         else:
             draw.rectangle(box, fill="black")
+    for box in image_boxes:
+        draw.rectangle(box, fill="black")
     for item in regions:
         draw.rectangle(_clean_box(item["bbox"], image.width, image.height, pad=0), fill="black")
     return image
@@ -1980,6 +2064,14 @@ def evaluate_review(project):
         red.append({"code": "PDF_SCAN_STOPPED",
                     "action": "扫描已停止，未完成识别的页面将按原文导出"})
     hard_issues = []
+    pixel_failed = [x.get("page") for x in project.get("pages", [])
+                    if x.get("pixel_detection") in ("failed", "partial") and not (
+                        x.get("manual_confirm") and x.get("reviewed") and
+                        x.get("reviewed_content_revision") == x.get("content_revision", 0))]
+    if pixel_failed:
+        hard_issues.append({"code": "PDF_IMAGE_DETECTION_FAILED", "pages": pixel_failed,
+                            "action": "第 %s 页图像检测失败，请重试，或人工补框并明确确认本页已检查" %
+                            "、".join(str(n) for n in pixel_failed)})
     if pending:
         _pages = sorted({x.get("page") for x in pending if x.get("page") is not None})
         _note = ("（第" + "、".join(str(n) for n in _pages) + "页）" if _pages else "")

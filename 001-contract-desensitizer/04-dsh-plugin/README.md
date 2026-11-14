@@ -2,7 +2,7 @@
 
 上传文书，核对敏感内容，导出脱敏稿。支持 Word、文字／扫描／照片 PDF、TXT 和 Markdown；解析与脱敏在本机完成。同案材料可沿用字段与占位符；Word 可配合映射还原，PDF 导出为像素稿、不提供映射还原。
 
-本地安装包版本为 **1.4.2**，修复录屏反馈中的识别问题：PDF 文字层康熙部首字符、当事人列表人名、跨行公司名、引号简称、公司后缀误报；自定义日期／金额规则（DATE_／AMOUNT_ 开头）随“保留金额、日期”保留；OCR 重复框去重，导出预览与缩略图失败可重试。已在 macOS DSH 桌面版 0.2.2-rc.1 隔离实测；Windows 与 Word 路径沿用 1.4.1 验证范围。实际公开制品见 [GitHub Releases](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases)；旧版 Windows／macOS 结果不代替本版新增路径验收。
+本地候选安装包版本为 **1.4.3-dev.2**。保留1.4.3-dev的印章、照片、签名／手印等PDF候选能力，并修复正文误遮：公司名前的角色叙述、已定义简称后的连接词不再并入公司名；擦除边距按相邻文字限制，包含正文的粗框须人工框选后确认。已完成构造PDF应用集成、插件46项Python／42项Node回归基线、后续受影响交互定向和Mac Chrome单页构造样本闭环；实际下载与编码后的预览一致，原件不变。已有历史PDF项目请重试识别后应用范围修正。尚未安装到日常DSH或公开发布；Windows新增路径仍待实机复验，Word内嵌印章与独立JPG上传未扩展。公开制品见 [GitHub Releases](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases)。
 
 ## 安装和打开
 

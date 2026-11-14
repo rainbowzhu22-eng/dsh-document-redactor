@@ -21,7 +21,7 @@ def _progress(stage):
 def _environment_valid(python, core, windows):
     if not python.is_file():
         return False
-    check = "import docx,pdfplumber,pypdf,reportlab,pypdfium2,PIL,regex; from lxml import etree"
+    check = "import docx,pdfplumber,pypdf,reportlab,pypdfium2,PIL,regex,numpy; from lxml import etree"
     if windows:
         check += ("; import importlib,onnxruntime; "
                   "[importlib.import_module('winrt.windows.' + m) for m in "

@@ -1,6 +1,6 @@
 {
   "name": "dsh-document-redactor",
-  "version": "1.4.2",
+  "version": "1.4.3-dev.2",
   "description": "Local document redaction and review with DSH Agent rule assistance",
   "type": "module",
   "license": "MIT",
