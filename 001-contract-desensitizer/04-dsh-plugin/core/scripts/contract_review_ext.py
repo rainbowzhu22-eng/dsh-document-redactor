@@ -438,6 +438,7 @@ _MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 _R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _V = "{urn:schemas-microsoft-com:vml}"
+_O = "{urn:schemas-microsoft-com:office:office}"
 _REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 _COMMENT_TAGS = {_W + name for name in ("commentReference", "commentRangeStart", "commentRangeEnd")}
 _BAD_TAGS = {"ins", "del", "delText", "moveFrom", "moveTo", "moveFromRangeStart", "moveToRangeStart",
@@ -511,7 +512,7 @@ def _unsupported_relationship_closure(source, names, manifest, roots,
             for node in unsupported_roots
             for element in node.iter()
             for attr, value in element.attrib.items()
-            if attr.startswith(_R)
+            if attr.startswith(_R) or (element.tag == _V + "imagedata" and attr == _O + "relid")
         }
         if not referenced_ids:
             continue
@@ -610,11 +611,16 @@ def _story_image_parts(source, names, stories, unsupported_manifest=()):
                 relations[rid] = target
 
         used_ids = set()
+        image_ordinal = 0
         for node in root.iter():
             if _inside_nodes(node, unsupported_roots):
                 continue
             if not isinstance(node.tag, str):
                 continue
+            if node.tag in {_A + "blip", _V + "imagedata"}:
+                image_ordinal += 1
+            image_error = "无法导出：%s第%d个图片的内嵌引用缺失或无效，请保留原件并反馈此提示。" % (
+                part, image_ordinal)
             if node.tag == _A + "blip":
                 if node.get(_R + "link"):
                     continue
@@ -622,14 +628,17 @@ def _story_image_parts(source, names, stories, unsupported_manifest=()):
                 if rid in external_ids:
                     continue
                 if not rid or rid not in relations:
-                    raise ValueError("DOCX图片未关联可保留的内嵌图片")
+                    raise ValueError(image_error)
                 used_ids.add(rid)
             elif node.tag == _V + "imagedata":
-                rid = node.get(_R + "id", "")
+                ids = {node.get(key) for key in (_R + "id", _O + "relid") if node.get(key)}
+                if len(ids) > 1:
+                    raise ValueError("无法导出：%s第%d个图片含互相冲突的图片引用。" % (part, image_ordinal))
+                rid = next(iter(ids), "")
                 if rid in external_ids:
                     continue
                 if not rid or rid not in relations:
-                    raise ValueError("DOCX图片未关联可保留的内嵌图片")
+                    raise ValueError(image_error)
                 used_ids.add(rid)
 
         for drawable in list(root.iter(_W + "drawing")) + list(root.iter(_W + "pict")):
@@ -711,47 +720,128 @@ def _ordinary_format_node(node):
             not any(key.startswith(_R) for key in node.attrib))
 
 
-def _simple_content_controls(root, ignored_controls=()):
-    safe = set()
+_CONTROL_PROPERTIES = {
+    _W + name for name in (
+        "sdtPr", "sdtEndPr", "alias", "tag", "id", "lock", "text", "richText",
+        "rPr", "date", "dateFormat", "lid", "storeMappedDataAs", "calendar",
+        "docPartObj", "docPartList", "docPartGallery", "docPartCategory", "docPartUnique",
+        "comboBox", "dropDownList", "listItem", "placeholder", "docPart",
+        "showingPlcHdr", "temporary",
+    )
+}
+_CONTROL_CONTENT = {
+    _W + name for name in (
+        "sdtContent", "p", "pPr", "r", "rPr", "t", "tab", "br", "cr",
+        "proofErr", "bookmarkStart", "bookmarkEnd", "tbl", "tblPr", "tblGrid",
+        "tr", "trPr", "tc", "tcPr",
+    )
+}
+_CONTROL_TABLE_FORMAT = {
+    _W + name for name in (
+        "tblStyle", "tblW", "tblLook", "tblLayout", "tblInd", "tblBorders",
+        "tblCellMar", "tblCellSpacing", "tblHeader", "gridCol", "tcW", "gridSpan",
+        "vMerge", "hMerge", "tcBorders", "tcMar", "vAlign", "trHeight", "cantSplit",
+        "gridBefore", "gridAfter", "wBefore", "wAfter", "hideMark", "noWrap",
+        "top", "left", "bottom", "right", "start", "end", "insideH", "insideV",
+        "shd", "jc", "textDirection", "cnfStyle",
+    )
+}
+
+
+def _control_rejection_reason(control, safe_nested):
+    if any(node.tag == _W + "dataBinding" for node in control.iter()):
+        return "含数据绑定，无法保证原始数据不会重新回填"
+    if any(key.startswith(_R) for node in control.iter() for key in node.attrib):
+        return "含链接或对象关系，尚不能完整处理"
+    if len(control.findall(_W + "sdtContent")) != 1:
+        return "内容区域缺失或重复"
+    if (len(control.findall(_W + "sdtPr")) > 1 or
+            any(child.tag not in {_W + "sdtPr", _W + "sdtContent", _W + "sdtEndPr"}
+                for child in control)):
+        return "控件结构异常"
+    for child in control:
+        if child.tag == _W + "sdtContent":
+            continue
+        for node in child.iter():
+            if node.tag not in _CONTROL_PROPERTIES and not _ordinary_format_node(node):
+                return "含尚未支持的控件属性"
+            if (node.text or "").strip():
+                return "控件属性中含额外文字"
+
+    def inspect(node):
+        if node.tag == _W + "sdt":
+            return "嵌套控件含未支持结构" if node not in safe_nested else ""
+        table_format = (node.tag in _CONTROL_TABLE_FORMAT and
+                        any(a.tag in {_W + "tblPr", _W + "tblGrid", _W + "trPr", _W + "tcPr"}
+                            for a in node.iterancestors()) and
+                        not (node.text or "").strip())
+        if node.tag not in _CONTROL_CONTENT and not table_format and not _ordinary_format_node(node):
+            return "内容中含尚未支持的对象或结构"
+        if node.tag != _W + "t" and (node.text or "").strip():
+            return "内容中含无法定位的额外文字"
+        for child in node:
+            reason = inspect(child)
+            if reason:
+                return reason
+        return ""
+
+    return inspect(control.find(_W + "sdtContent"))
+
+
+def _content_control_decisions(root, ignored_controls=()):
     ignored = set(ignored_controls)
-    allowed_properties = {
-        _W + "alias", _W + "tag", _W + "id", _W + "lock", _W + "text",
-    }
-    allowed_content_tags = {
-        _W + name for name in (
-            "sdtContent", "p", "pPr", "r", "rPr", "t", "tab", "br", "cr",
-            "proofErr", "bookmarkStart", "bookmarkEnd",
-        )
-    }
-    for control in root.iter(_W + "sdt"):
+    safe, reasons = set(ignored), {}
+    for control in reversed(list(root.iter(_W + "sdt"))):
         if control in ignored:
             continue
+        reason = _control_rejection_reason(control, safe)
+        if reason:
+            reasons[control] = reason
+        else:
+            safe.add(control)
+    return safe - ignored, reasons
+
+
+def _simple_content_controls(root, ignored_controls=()):
+    return _content_control_decisions(root, ignored_controls)[0]
+
+
+def _content_control_error(part, root, ignored_controls=()):
+    _, reasons = _content_control_decisions(root, ignored_controls)
+    for index, control in enumerate(root.iter(_W + "sdt"), 1):
+        if control in reasons:
+            location = ("正文" if part == "word/document.xml" else
+                        "页眉" if re.fullmatch(r"word/header\d+\.xml", part) else "页脚")
+            return "无法导出：%s（%s）第%d个内容控件%s。请保留原件并反馈此提示，无需反复另存。" % (
+                location, part, index, reasons[control])
+    return "内容控件结构未通过校验"
+
+
+def _normalize_static_content_controls(controls):
+    # Keep visible content and formatting, remove cached dates, choices and
+    # placeholder references which could restore an original value on reopening.
+    for control in controls:
         properties = control.find(_W + "sdtPr")
-        content = control.find(_W + "sdtContent")
-        if (properties is None or content is None or
-                any(child.tag not in {_W + "sdtPr", _W + "sdtContent", _W + "sdtEndPr"}
-                    for child in control) or
-                any(child.tag not in allowed_properties for child in properties) or
-                any(node.tag not in allowed_content_tags and not _ordinary_format_node(node)
-                    for node in content.iter()) or
-                any(node.tag == _W + "sdt" for node in content.iter()) or
-                any(key.startswith(_R) for node in content.iter()
-                    for key in node.attrib)):
-            continue
-        safe.add(control)
-    return safe
+        if properties is None:
+            properties = ET.Element(_W + "sdtPr")
+            control.insert(0, properties)
+        properties.attrib.clear()
+        for child in list(properties):
+            if child.tag not in {_W + "id", _W + "lock", _W + "rPr"}:
+                properties.remove(child)
+        ET.SubElement(properties, _W + "richText")
 
 
 def classify_content_controls(part, root):
     """逐控件给出兼容结论，不能因另一个问题控件抹去安全控件分类。"""
     footer_nodes = _safe_page_footer_nodes(root) if re.fullmatch(r"word/footer\d+\.xml", part) else set()
     safe_page = {node for node in root.iter(_W + "sdt") if node in footer_nodes}
-    safe_text = _simple_content_controls(root, ignored_controls=safe_page)
+    safe_text, reasons = _content_control_decisions(root, ignored_controls=safe_page)
     rows = []
     for index, node in enumerate(root.iter(_W + "sdt")):
         kind = "safe_page" if node in safe_page else "safe_text" if node in safe_text else "unsupported"
         rows.append({"ordinal": index, "classification": kind,
-                     "reason": "安全页码或普通文字控件" if kind != "unsupported" else "绑定、关系或未支持结构需处理"})
+                     "reason": "安全页码或静态文字控件" if kind != "unsupported" else reasons[node]})
     return rows
 
 
@@ -871,8 +961,9 @@ def _remove_relationship_references(root, relationship_id):
 
     for parent in list(root.iter()):
         for child in list(parent):
-            if not any(key.startswith(_R) and key.rsplit("}", 1)[-1] in {
-                    "id", "link", "embed"} and value == relationship_id
+            if not any(((key.startswith(_R) and key.rsplit("}", 1)[-1] in {
+                    "id", "link", "embed"}) or
+                    (child.tag == _V + "imagedata" and key == _O + "relid")) and value == relationship_id
                     for key, value in child.attrib.items()):
                 continue
             index = parent.index(child)
@@ -1191,7 +1282,7 @@ def clean_docx(path, originals, comment_mode, preserve_revisions=False,
             safe_controls = _simple_content_controls(
                 root, ignored_controls=safe_footer_controls)
             if controls and len(safe_controls) + len(safe_footer_controls) != len(controls):
-                raise ValueError("DOCX含未绑定或包含不受支持内容的内容控件")
+                raise ValueError(_content_control_error(part, root, safe_footer_controls))
             if controls:
                 content_control_digests[part] = _content_control_structure_digest(
                     root, additional_controls=safe_footer_controls)
@@ -1290,7 +1381,7 @@ def clean_docx(path, originals, comment_mode, preserve_revisions=False,
                     if (content_controls and
                             len(safe_content_controls) + len(safe_footer_controls) !=
                             len(content_controls)):
-                        raise ValueError("DOCX含未绑定或包含不受支持内容的内容控件")
+                        raise ValueError(_content_control_error(name, root, safe_footer_controls))
                     story_images = {node for drawable in
                                     list(root.iter(_W + "drawing")) + list(root.iter(_W + "pict"))
                                     for node in (drawable,)}
@@ -1359,6 +1450,7 @@ def clean_docx(path, originals, comment_mode, preserve_revisions=False,
                                 root, additional_controls=safe_footer_controls) !=
                             expected_control_digest):
                         raise ValueError("外发清理改变了内容控件结构")
+                    _normalize_static_content_controls(safe_content_controls)
                     for element in root.iter():
                         if (unknown_revision_passthrough and
                                 _inside_nodes(element,

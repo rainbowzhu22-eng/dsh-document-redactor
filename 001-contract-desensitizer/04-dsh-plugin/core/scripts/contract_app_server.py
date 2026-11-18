@@ -866,6 +866,7 @@ def _run_detector(path: str, terms=None, litigation=False, unified=True,
                     rows = review_ext.classify_content_controls(part, XML.fromstring(package.read(part)))
                     for row in rows:
                         compat_preview.append({"part": part,
+                            "ordinal": row["ordinal"] + 1,
                             "part_kind": "正文" if part == "word/document.xml" else "页眉页脚",
                             "classification": row["classification"], "reason": row["reason"],
                             "verdict": "supported" if row["classification"] != "unsupported" else "blocked"})
