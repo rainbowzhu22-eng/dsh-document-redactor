@@ -2032,6 +2032,8 @@ def build_review_page(sid: str, info: Dict[str, Any]) -> bytes:
     for row in (revisions.get("compat_preview") or []):
         if row.get("verdict") == "blocked":
             where = str(row.get("part") or row.get("part_kind") or "文档")
+            if row.get("ordinal"):
+                where += "第" + str(row["ordinal"]) + "个控件"
             reason = str(row.get("reason") or row.get("classification") or "不支持的内容控件")
             add_notice(where + "中有无法自动处理的内容控件：" + reason + "。")
 
