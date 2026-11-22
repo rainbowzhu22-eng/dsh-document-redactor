@@ -6,13 +6,15 @@
 
 文书脱敏工作台把**识别、复核、替换、还原**放进 DeepSeek Harness。上传文书，核对敏感内容，导出脱敏稿；同一案件的多份材料还能沿用同一套字段和占位符。
 
-**支持 Word、PDF、TXT、Markdown · 文书在本机处理**
+**支持 Word、PDF、TXT、Markdown、Excel · 文书在本机处理**
 
-1.4.3-dev.4 为供用户复试的预发布版。已完成Mac Chrome中同一份含控件和图片的虚构DOCX导出、下载与映射还原；用户原合同、Mac WPS原生打开及Windows仍待现场复试。
+1.5.0-dev.4 为预发布版，新增 Excel 脱敏及保留公式的演示金额、PDF 同步缩放，以及各格式的导出报错指引。Windows Excel、日常 DSH 侧栏点击及用户原合同待复试。
 
-[**立即下载 v1.4.3-dev.4**](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.4.3-dev.4) · [工具官网](https://xingchendata.com/dsh-document-redactor.html) · [插件使用说明](001-contract-desensitizer/04-dsh-plugin/README.md)
+[**立即下载 v1.5.0-dev.4**](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.5.0-dev.4) · [工具官网](https://xingchendata.com/dsh-document-redactor.html) · [插件使用说明](001-contract-desensitizer/04-dsh-plugin/README.md)
 
 ![文书脱敏工作台界面](001-contract-desensitizer/04-dsh-plugin/media/desktop-home-0.3.1.png)
+
+[查看新版功能、安装与验证范围](001-contract-desensitizer/04-dsh-plugin/docs/RELEASE-NOTES-1.5.0-dev.4.md)。
 
 ## 1.4.3-dev.4 更新：Word控件与图片兼容修复
 
@@ -64,20 +66,20 @@
 ## 开始使用
 
 1. 安装并打开 [DeepSeek Harness](https://deepseek.com/harness/)。
-2. [下载插件安装包](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.4.3-dev.4)，选择 `dsh-document-redactor-1.4.3-dev.4.tgz`。
+2. [下载插件安装包](https://github.com/rainbowzhu22-eng/dsh-document-redactor/releases/tag/v1.5.0-dev.4)，选择 `dsh-document-redactor-1.5.0-dev.4.tgz`。
 3. 在 DSH 侧栏选择 **“插件” → “添加插件”**，填入下载文件的**完整路径**，点击安装，再按提示启用或重启。
 
 **如何取得完整路径：**
 
-- **Windows**：在资源管理器找到下载的 TGZ，按住 Shift 右键点击文件，选择“复制文件地址”（部分版本显示“复制为路径”）。粘贴到 DSH 输入框后，**删掉最前和最后的双引号**，保留中间的完整路径及空格。例如：`C:\Users\你的用户名\Downloads\dsh-document-redactor-1.4.3-dev.4.tgz`。
-- **macOS**：在 Finder 选中文件，按 `Option + Command + C` 复制路径，再粘贴到 DSH。例如：`/Users/你的用户名/Downloads/dsh-document-redactor-1.4.3-dev.4.tgz`。
+- **Windows**：在资源管理器找到下载的 TGZ，按住 Shift 右键点击文件，选择“复制文件地址”（部分版本显示“复制为路径”）。粘贴到 DSH 输入框后，**删掉最前和最后的双引号**，保留中间的完整路径及空格。例如：`C:\Users\你的用户名\Downloads\dsh-document-redactor-1.5.0-dev.4.tgz`。
+- **macOS**：在 Finder 选中文件，按 `Option + Command + C` 复制路径，再粘贴到 DSH。例如：`/Users/你的用户名/Downloads/dsh-document-redactor-1.5.0-dev.4.tgz`。
 
-示例中的路径仅作格式参考，请使用自己电脑复制出的实际路径。TGZ 无需解压。**只填 `dsh-document-redactor-1.4.3-dev.4.tgz` 会被当作在线包名查询**，可能出现 `ERR_PNPM_INVALID_PACKAGE_NAME`；改为完整路径即可，切换镜像源不能修正路径。
+示例中的路径仅作格式参考，请使用自己电脑复制出的实际路径。TGZ 无需解压。**只填 `dsh-document-redactor-1.5.0-dev.4.tgz` 会被当作在线包名查询**，可能出现 `ERR_PNPM_INVALID_PACKAGE_NAME`；改为完整路径即可，切换镜像源不能修正路径。
 
 如需通过终端安装，先通过应用菜单“管理 dsh 命令…”注册 `dsh` 命令，再从菜单或托盘退出 DSH，在下载目录打开终端，执行：
 
 ```sh
-dsh plugin --profile desktop add "./dsh-document-redactor-1.4.3-dev.4.tgz"
+dsh plugin --profile desktop add "./dsh-document-redactor-1.5.0-dev.4.tgz"
 ```
 
 安装并启用后，点击侧栏 **“文书脱敏” → “打开脱敏工具”**，即可进入工作台。Windows 与 macOS 使用同一份 TGZ 安装包。终端命令中的双引号用于保护路径；桌面安装输入框中请勿保留外层双引号。

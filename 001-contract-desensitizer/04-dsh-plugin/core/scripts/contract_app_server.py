@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 from contract_ui_notices import EXPORT_REVIEW_NOTICE, EXPORT_UNRECOGNIZED_NOTE
+from contract_export_errors import ExportFailure, file_failure, with_export_context
 
 # 复用 detector / redactor 的离线算法、改写器、还原器
 import contract_sensitive_detector as D
@@ -45,6 +46,15 @@ import contract_review_ext as review_ext
 import contract_pdf_project as pdf_project
 import contract_redaction_policy as Policy
 from contract_pdf_ui import page as build_pdf_page
+import contract_xlsx as xlsx
+from contract_xlsx_amounts import AmountPlan
+from contract_xlsx_formula import (
+    clear_formula_cache as clear_xlsx_formula_cache,
+    coordinates as xlsx_coordinates,
+    validate as validate_xlsx_formulas,
+)
+from contract_xlsx_ui import page as build_xlsx_page
+from zipfile import BadZipFile
 from contract_sensitive_detector import (
     TYPE_META,
     Settings,
@@ -319,7 +329,7 @@ def _pdf_jobs_active(sids) -> bool:
 # （original.pdf ＋ pages/*.png ＋ text/*.json）。这些是交付/共享/换机前必须清掉的东西。
 # 清理策略：**只删明文，保留 out/ 的脱敏产物**；sid 白名单（12 位 hex）＋ 路径越界校验，
 # 绝不触碰 cases/ 等非会话目录。
-PLAINTEXT_SUFFIXES = (".docx", ".pdf", ".txt", ".md")
+PLAINTEXT_SUFFIXES = (".docx", ".pdf", ".txt", ".md", ".xlsx")
 _SID_RE_CLEAN = re.compile(r"^[0-9a-f]{12}$")
 _PDF_STATE_TEMP_RE = re.compile(r"^pdf-project\.json\.\d+\.\d+\.[0-9a-f]{32}\.tmp$")
 RETENTION_ENV = "CONTRACT_DESENSITIZER_RETENTION_DAYS"
@@ -824,6 +834,59 @@ def _export_selection_digest(info, request):
                                     separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _xlsx_suggestions(workbook, rules_snapshot, policy_id, source):
+    settings = Settings(min_confidence=0.5, min_severity="low")
+    settings.extra_specs = list(rules_snapshot["extra_specs"])
+    settings.extra_type_meta.update(rules_snapshot["type_overrides"])
+    review_ext.configure_unified_settings(settings)
+    sheet_numbers = {name: index for index, name in enumerate(workbook.sheet_names, 1)}
+    blocks = []
+    for field in workbook.fields:
+        block = D.Block(field.text, "table_cell", f"{field.sheet}!{field.location}")
+        if xlsx.ADDRESS.fullmatch(field.location):
+            column, row = xlsx_coordinates(field.location)
+            block.table_ref = (sheet_numbers[field.sheet], row, column, 1)
+        blocks.append(block)
+    field_count = len(blocks)
+    for sheet, address, _, cached in workbook.formulas:
+        blocks.append(D.Block(
+            cached.text or "" if cached is not None else "", "table_cell", f"{sheet}!{address} 公式结果"))
+    engine = DetectorEngine(settings)
+    candidates = engine.scan_document(D.Document(source, "xlsx", blocks))
+    proposals, cache_checks = {}, {}
+    for item in candidates:
+        if Policy.is_excluded(item.type_id, policy_id):
+            continue
+        token = f"[{item.label}#{item.cid}]"
+        for found in item.occurrences:
+            if field_count <= found.block_index < len(blocks):
+                sheet, address, _, _ = workbook.formulas[found.block_index - field_count]
+                if found.text:
+                    cache_checks.setdefault((sheet, address), set()).add(found.text)
+            elif 0 <= found.block_index < field_count:
+                proposals.setdefault(found.block_index, []).append(
+                    (found.local_start, found.local_end, token))
+    suggestions = {}
+    for index, edits in proposals.items():
+        text = blocks[index].text
+        end_at = len(text)
+        for start, end, token in sorted(edits, reverse=True):
+            if 0 <= start < end <= end_at:
+                text = text[:start] + token + text[end:]
+                end_at = start
+        if text != blocks[index].text:
+            suggestions[index] = text
+    for index, field in enumerate(workbook.fields):
+        if field.kind == "author" and field.text:
+            suggestions[index] = "[批注作者]"
+        elif field.kind in {"date", "amount"}:
+            if policy_id == Policy.PRESERVE_TRANSACTION:
+                suggestions.pop(index, None)
+            else:
+                suggestions[index] = "[日期]" if field.kind == "date" else "[金额]"
+    return suggestions, cache_checks
+
+
 def _run_detector(path: str, terms=None, litigation=False, unified=True,
                   rules_snapshot=None) -> Dict[str, Any]:
     """对刚上传的路径跑一次 detector，返回 (doc, candidates, report, report_full_text)。
@@ -1093,6 +1156,17 @@ class AppHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_json(self, obj: Any, code: int = 200) -> None:
+        path = getattr(self, "path", "")
+        obj = with_export_context(path, obj, code)
+        if (code >= 400 and path.startswith(("/download/", "/history/download/")) and
+                getattr(self, "headers", {}).get("Sec-Fetch-Mode") == "navigate"):
+            error = _html.escape(obj.get("error", "下载未完成。"))
+            advice = _html.escape(obj.get("advice", "返回导出结果后重新下载。"))
+            label = _html.escape(obj.get("code", "EXPORT_DOWNLOAD_FAILED"))
+            self._send_html(f'<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+                            f'<title>下载未完成</title><main><h1>{error}</h1><p>{advice}</p>'
+                            f'<p><a href="/history">打开历史项目</a></p><small>{label}</small></main></html>', code)
+            return
         data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self._send(code, "application/json; charset=utf-8", data)
         request_id = getattr(self, "_upload_request_id", None)
@@ -1142,7 +1216,7 @@ class AppHandler(BaseHTTPRequestHandler):
             for fn in sorted(os.listdir(sess)):
                 fp = os.path.join(sess, fn)
                 if os.path.isfile(fp) and os.path.splitext(fn)[1].lower() in (
-                        ".docx", ".pdf", ".txt", ".md"):
+                        ".docx", ".pdf", ".txt", ".md", ".xlsx"):
                     return fn
         except OSError:
             pass
@@ -1330,6 +1404,15 @@ class AppHandler(BaseHTTPRequestHandler):
                 "init_error": _rules_notice.get("init_error"),
             })
             return
+        m = re.fullmatch(r"/xlsx/([0-9a-f]{12})", path)
+        if m:
+            sid = m.group(1)
+            info = self.state.get(sid)
+            if not info or "xlsx_review" not in info:
+                self._send_html(build_expired_page(), 404)
+                return
+            self._send_html(build_xlsx_page(sid, info["xlsx_review"]))
+            return
         m = re.fullmatch(r"/pdf/([0-9a-f]{12})", path)
         if m:
             try:
@@ -1442,12 +1525,18 @@ class AppHandler(BaseHTTPRequestHandler):
             if not os.path.exists(target):
                 self._send_json({"ok": False, "error": "file not found"}, 404)
                 return
-            with open(target, "rb") as f:
-                data = f.read()
+            try:
+                with open(target, "rb") as f:
+                    data = f.read()
+            except OSError as exc:
+                self._send_json(file_failure(exc, stage="读取下载文件").payload(), 404 if isinstance(exc, FileNotFoundError) else 500)
+                return
             ctype = "application/octet-stream"
             ext = os.path.splitext(target)[1].lower()
             if ext == ".docx":
                 ctype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            elif ext == ".xlsx":
+                ctype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             elif ext == ".json":
                 ctype = "application/json; charset=utf-8"
             elif ext == ".log":
@@ -1462,7 +1551,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
             destination = "/restore" if info.get("mode") == "restore" else "/review"
             self.send_response(302)
-            self.send_header("Location", destination + "?sid=" + urllib.parse.quote(sid))
+            location = ("/xlsx/" + urllib.parse.quote(sid) if "xlsx_review" in info
+                        else destination + "?sid=" + urllib.parse.quote(sid))
+            self.send_header("Location", location)
             self.end_headers()
             return
         if path == "/restore":
@@ -1490,6 +1581,9 @@ class AppHandler(BaseHTTPRequestHandler):
             if not info:
                 self._send_html(build_expired_page())
                 return
+            if "xlsx_review" in info:
+                self._send_html(build_xlsx_page(sid, info["xlsx_review"]))
+                return
             self._send_html(build_review_page(sid, info))
             return
         if path == "/history":
@@ -1506,8 +1600,12 @@ class AppHandler(BaseHTTPRequestHandler):
             if not target:
                 self._send_json({"ok": False, "error": "file not found"}, 404)
                 return
-            with open(target, "rb") as f:
-                data = f.read()
+            try:
+                with open(target, "rb") as f:
+                    data = f.read()
+            except OSError as exc:
+                self._send_json(file_failure(exc, stage="读取下载文件").payload(), 404 if isinstance(exc, FileNotFoundError) else 500)
+                return
             ctype = "application/octet-stream"
             ext = os.path.splitext(target)[1].lower()
             if ext == ".docx":
@@ -1572,6 +1670,92 @@ class AppHandler(BaseHTTPRequestHandler):
             _save_rules_state(state)
         self._send_json({"ok": True, "path": user_rules_path()})
 
+    def _export_xlsx(self, sid, body):
+        info = self.state.get(sid)
+        if not info or "xlsx_review" not in info:
+            self._send_json({"ok": False, "error": "session not found"}, 404)
+            return
+        stage = "生成脱敏 Excel"
+        try:
+            request = json.loads(body)
+            if not isinstance(request, dict):
+                self._send_json({"ok": False, "error": "invalid json"}, 400)
+                return
+            plan_only = request.get("plan_only") is True
+            if plan_only:
+                stage = "分析 Excel 金额联动范围"
+            live_rules = _read_rules_file_bytes(user_rules_path())
+            if _sha256_bytes(live_rules or b"") != info["rules_sha256"]:
+                self._send_json({"ok": False, "code": "RULES_CHANGED",
+                                 "error": "识别规则已变化，请重新上传并复核"}, 409)
+                return
+            with open(info["input_path"], "rb") as source:
+                original = source.read(MAX_UPLOAD_BYTES + 1)
+            if _sha256_bytes(original) != info["input_sha256"]:
+                raise xlsx.WorkbookError("原件已变化，请重新上传后再复核", code="EXPORT_SOURCE_CHANGED")
+            workbook = xlsx.Workbook(original)
+            amount_targets = request.get("amount_targets")
+            plan = AmountPlan(workbook, amount_targets) if amount_targets is not None or plan_only else None
+            if plan_only:
+                self._send_json({"ok": True, "amount_plan": plan.preview()})
+                return
+            if plan is not None and request.get("amount_plan_id") != plan.digest:
+                raise xlsx.WorkbookError("当前金额选择未完成分析或已改变。",
+                                         advice="点击「分析金额范围」，核对联动位置后重新确认导出。",
+                                         code="XLSX_AMOUNT_PLAN_REQUIRED")
+
+            def prepare_export(book, edits):
+                checks = info["xlsx_cache_checks"]
+                if plan is None:
+                    validate_xlsx_formulas(book, edits, clear_cache=True, cache_checks=checks)
+                    return
+                validate_xlsx_formulas(book, edits, formulas=plan.formulas,
+                                       cache_checks={key: value for key, value in checks.items()
+                                                     if key not in plan.results})
+                plan.apply(edits)
+                clear_xlsx_formula_cache(book)
+
+            result = workbook.export(request.get("edits"), request.get("acknowledged") is True,
+                                     prepare_export)
+        except xlsx.WorkbookError as exc:
+            self._send_json({**exc.response(), "stage": stage}, 400)
+            return
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json({"ok": False, "error": "invalid json"}, 400)
+            return
+        except (ValueError, BadZipFile) as exc:
+            self._send_json({"ok": False, "error": str(exc)}, 400)
+            return
+        except OSError as exc:
+            self._send_json(file_failure(exc, stage="读取 Excel 原件").payload(), 409)
+            return
+        except Exception as exc:
+            sys.stderr.write("[xlsx-export] error_type=%s\n" % type(exc).__name__)
+            self._send_json(ExportFailure("XLSX_EXPORT_FAILED", "本机服务未能完成工作簿分析或生成。",
+                "确认原件可打开，重新上传后复核。若仍失败，请反馈此提示。", stage=stage).payload(), 500)
+            return
+
+        # Stage the bytes beside the final file. A failed or concurrent export
+        # must never leave a partial workbook at a visible download URL.
+        out = os.path.join(self.state.work_dir, sid, "out")
+        key = uuid.uuid4().hex[:12]
+        prefix = "演示金额-脱敏工作簿" if plan is not None else "脱敏工作簿"
+        name = f"{prefix}-{key}.xlsx"
+        staged = os.path.join(out, "." + key + ".tmp")
+        try:
+            os.makedirs(out, exist_ok=True)
+            with open(staged, "xb") as dest:
+                dest.write(result)
+            os.replace(staged, os.path.join(out, name))
+        except OSError as exc:
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+            self._send_json(file_failure(exc, saving=True, stage="保存脱敏 Excel").payload(), 500)
+            return
+        self._send_json({"ok": True, "url": f"/download/{sid}/{urllib.parse.quote(name)}"})
+
     def do_POST(self):
         if not self._local_request_allowed(mutation=True):
             self._send_json({"ok": False, "error": "invalid request origin"}, 403)
@@ -1594,6 +1778,7 @@ class AppHandler(BaseHTTPRequestHandler):
             or path.startswith("/api/pdf/sync-case/")
             or path.startswith("/api/pdf/control/")
             or path.startswith("/api/pdf/export/")
+            or path.startswith("/api/xlsx/export/")
             or path.startswith("/api/term/")
             or path.startswith("/api/apply/")
             or path.startswith("/api/restore/")
@@ -1806,6 +1991,11 @@ class AppHandler(BaseHTTPRequestHandler):
             self._handle_rules_restore()
             return
 
+        m = re.fullmatch(r"/api/xlsx/export/([0-9a-f]{12})", path)
+        if m:
+            self._export_xlsx(m.group(1), body_bytes)
+            return
+
         if path == "/api/upload":
             sid = None
             sess_dir = None
@@ -1834,7 +2024,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     return
                 safe_name = _safe_filename(fld.get("filename") or "upload.bin")
                 ext = _ext_of(safe_name)
-                if ext not in (".docx", ".pdf", ".txt", ".md"):
+                if ext not in (".docx", ".pdf", ".txt", ".md", ".xlsx"):
                     self._send_json({"ok": False, "error": f"暂不支持 {ext} 文件"}, 400)
                     return
                 if mode == "redact":
@@ -1856,6 +2046,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 if mode == "restore" and ext == ".pdf":
                     self._send_json({"ok": False, "error": "PDF 原件请从本机项目的「取回原始 PDF」获取；不能从脱敏 PDF 或文字映射表恢复扫描像素"}, 400)
                     return
+                if ext == ".xlsx" and (mode != "redact" or case_name):
+                    self._send_json({"ok": False, "error": "Excel 首批仅支持独立项目的脱敏，请使用脱敏模式并清空案件名称"}, 400)
+                    return
                 if mode == "redact":
                     confirm_sha = (mp.get("rules_confirm_sha256", {}).get("data")
                                    or b"").decode("utf-8", "ignore").strip() or None
@@ -1869,12 +2062,43 @@ class AppHandler(BaseHTTPRequestHandler):
                                          "rules_sha256": exc.sha},
                                         409 if exc.code == "RULES_DELETION_CONFIRM" else 400)
                         return
+                if ext == ".xlsx":
+                    try:
+                        workbook = xlsx.Workbook(fld["data"])
+                        validate_xlsx_formulas(workbook, {})
+                        suggestions, cache_checks = _xlsx_suggestions(
+                            workbook, rules_snapshot, policy_id, safe_name)
+                    except xlsx.WorkbookError as exc:
+                        payload = exc.response()
+                        if exc.advice:
+                            payload["error"] += " " + exc.advice
+                        self._send_json(payload, 400)
+                        return
+                    except RuleMatchTimeout as exc:
+                        self._send_json({"ok": False, "error": str(exc)}, 400)
+                        return
+                    except (BadZipFile, RuntimeError, NotImplementedError):
+                        self._send_json({"ok": False, "error": "Excel 文件无法读取，可能已加密、损坏或压缩方式不受支持"}, 400)
+                        return
                 sid = uuid.uuid4().hex[:12]
                 sess_dir = os.path.join(self.state.work_dir, sid)
                 os.makedirs(sess_dir, exist_ok=True)
                 input_path = os.path.join(sess_dir, safe_name)
                 with open(input_path, "wb") as f:
                     f.write(fld["data"])
+
+                if ext == ".xlsx":
+                    payload = workbook.review(suggestions, policy_id)
+                    payload.update(filename=safe_name, policyLabel=Policy.label(policy_id))
+                    self.state.new_session(sid, {"sid": sid, "filename": safe_name,
+                        "mode": "redact", "input_path": input_path,
+                        "xlsx_review": payload, "xlsx_cache_checks": cache_checks,
+                        "rules_sha256": rules_snapshot["sha256"],
+                        "input_sha256": _sha256_bytes(fld["data"])})
+                    upload_committed = True
+                    self._send_json({"ok": True, "sid": sid, "mode": "redact",
+                                     "redirect": f"/xlsx/{sid}"})
+                    return
 
                 if mode == "redact" and ext == ".pdf":
                     try:
@@ -2226,9 +2450,16 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "project access denied"}, 403)
                 return
             try:
-                req = json.loads(body_bytes.decode("utf-8")) or {}
+                req = json.loads(body_bytes.decode("utf-8") or "{}")
+                if not isinstance(req, dict):
+                    self._send_json({"ok": False, "error": "invalid json"}, 400)
+                    return
                 sid = m.group(1)
-                project = pdf_project.load(self.state.work_dir, sid)
+                try:
+                    project = pdf_project.load(self.state.work_dir, sid)
+                except FileNotFoundError:
+                    self._send_json({"ok": False, "error": "session not found"}, 404)
+                    return
                 if not project.get("rules_sha256"):
                     self._send_json({"ok": False, "code": "RULES_CHANGED",
                                      "error": "旧PDF项目缺少规则快照，请重新上传并复核后再导出"}, 409)
@@ -2250,13 +2481,18 @@ class AppHandler(BaseHTTPRequestHandler):
                                  "url": f"/history/download/{sid}/{urllib.parse.quote(result['name'])}",
                                  "exported_revision": result.get("exported_revision"),
                                  "notes": result.get("notes", [])})
-            except pdf_project.PdfDispositionRequired as exc:
-                self._send_json({"ok": False, "code": exc.code,
-                                 "error": str(exc)}, 400)
-            except (ValueError, TypeError, json.JSONDecodeError, FileNotFoundError) as exc:
-                self._send_json({"ok": False, "error": str(exc)}, 400)
+            except ExportFailure as exc:
+                self._send_json(exc.payload(), 400 if isinstance(exc, pdf_project.PdfDispositionRequired) else 409)
+            except OSError as exc:
+                self._send_json(file_failure(exc, stage="读取或写入 PDF 项目").payload(), 409)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "error": "invalid json"}, 400)
+            except (ValueError, TypeError) as exc:
+                self._send_json({"ok": False, "code": "PDF_EXPORT_VALIDATION_FAILED", "error": str(exc)}, 400)
             except Exception as exc:
-                self._send_json({"ok": False, "error": "导出失败：" + str(exc)}, 500)
+                sys.stderr.write("[pdf-export] error_type=%s\n" % type(exc).__name__)
+                self._send_json({"ok": False, "code": "PDF_EXPORT_FAILED",
+                                 "error": "本机服务在重建或校验 PDF 时遇到异常。"}, 500)
             return
 
         m = re.match(r"^/api/term/([A-Za-z0-9_-]+)$", path)
@@ -2335,6 +2571,9 @@ class AppHandler(BaseHTTPRequestHandler):
         if m:
             action, sid = m.group(1), m.group(2)
             info = self.state.get(sid)
+            if info and "xlsx_review" in info:
+                self._send_json({"ok": False, "error": "请从 Excel 复核页导出脱敏工作簿"}, 400)
+                return
             if not info:
                 self._send_json({"ok": False, "error": "session not found"}, 404)
                 return
@@ -2343,8 +2582,16 @@ class AppHandler(BaseHTTPRequestHandler):
             except Exception:
                 self._send_json({"ok": False, "error": "invalid json"}, 400)
                 return
+            if not isinstance(req, dict) or "doc" not in info:
+                self._send_json({"ok": False, "error": "invalid json" if not isinstance(req, dict) else "session not found"}, 400)
+                return
             input_path = info["input_path"]
-            if D._sha256(input_path) != info["doc"].sha256:
+            try:
+                current_source = D._sha256(input_path)
+            except OSError as exc:
+                self._send_json(file_failure(exc, stage="读取原件进行导出核验").payload(), 409)
+                return
+            if current_source != info["doc"].sha256:
                 self._send_json({"ok": False, "code": "EXPORT_SOURCE_CHANGED",
                                  "error": "原件已变化，请重新上传并复核"}, 409)
                 return
@@ -2424,7 +2671,11 @@ class AppHandler(BaseHTTPRequestHandler):
 
             # 决定输出目录 / 路径
             out_dir = os.path.join(self.state.work_dir, sid, "out")
-            os.makedirs(out_dir, exist_ok=True)
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+            except OSError as exc:
+                self._send_json(file_failure(exc, saving=True).payload(), 500)
+                return
             stem = os.path.splitext(os.path.basename(input_path))[0]
             output_name = f"{stem}_脱敏{ext or '.txt'}"
             out_path = os.path.join(out_dir, output_name)
@@ -2448,7 +2699,11 @@ class AppHandler(BaseHTTPRequestHandler):
 
             warnings = ""
             # v1.3.0 导出前清单留痕：低置信项（原始分数只进日志、不进界面）＋ 用户确认动作。
-            _min_conf = float(req.get("min_confidence", 0.5))
+            try:
+                _min_conf = float(req.get("min_confidence", 0.5))
+            except (TypeError, ValueError):
+                self._send_json({"ok": False, "error": "invalid json"}, 400)
+                return
             _report_items = (info.get("report") or {}).get("items") or []
             low_conf_items = [
                 {"type": it["type"], "label": it["label"], "value": it["value"],
@@ -2484,7 +2739,13 @@ class AppHandler(BaseHTTPRequestHandler):
             if comment_mode == "preserve_unredacted" and ext != ".docx":
                 self._send_json({"ok": False, "error": "保留批注但不脱敏仅支持DOCX"}, 400)
                 return
-            os.makedirs(stage_dir, exist_ok=False)
+            try:
+                os.makedirs(stage_dir, exist_ok=False)
+            except OSError as exc:
+                self._send_json(file_failure(exc, saving=True, stage="准备生成文件").payload(), 500)
+                return
+            saving = False
+            committed_artifacts = []
             try:
                 # 注：含占位符的文件 = 已被脱敏过，二次脱敏会再次写出 placeholder
                 # 避免重叠加：在该文件下不再生成新的 mapping（直接复用上一次）
@@ -2581,31 +2842,47 @@ class AppHandler(BaseHTTPRequestHandler):
                         shutil.copyfile(r["log"], staged_log_path)
                     log_dst = os.path.join(out_dir, output_name + ".redaction.log")
 
+                saving = True
                 os.replace(staged_out_path, out_path)
+                committed_artifacts.append(out_path)
                 if mapping_dst:
                     os.replace(staged_mapping_path, mapping_dst)
+                    committed_artifacts.append(mapping_dst)
                 else:
                     if os.path.isfile(out_path + ".mapping.json"):
                         os.unlink(out_path + ".mapping.json")
                 if log_dst:
                     os.replace(staged_log_path, log_dst)
+                    committed_artifacts.append(log_dst)
             except Exception as exc:
-                for artifact in (out_path, out_path + ".mapping.json",
-                                 out_path + ".redaction.log"):
+                for artifact in committed_artifacts:
                     try:
-                        if os.path.isfile(artifact):
-                            os.unlink(artifact)
+                        os.unlink(artifact)
                     except OSError:
                         pass
                 shutil.rmtree(stage_dir, ignore_errors=True)
-                error = f"脱敏失败：{exc}"
-                if comment_mode == "redact_preserve" and "无法保留并脱敏批注" in str(exc):
-                    error += "。请在页面上方将批注处理修改为“保留批注但不脱敏”或“移除全部批注”，然后重新导出。"
-                code = "EXPORT_NO_REPLACEMENTS_ACK_REQUIRED" if "没有可替换的内容" in str(exc) else "EXPORT_GENERATION_FAILED"
-                self._send_json({"ok": False, "error": error, "code": code,
-                                 "issues": [{"code": code, "severity": "blocking", "stage": "generate",
-                                             "resolution_actions": ["重新检查选择和处理方式后重试"]}]},
-                                409 if code == "EXPORT_NO_REPLACEMENTS_ACK_REQUIRED" else 500)
+                if isinstance(exc, ExportFailure):
+                    failure = exc
+                elif isinstance(exc, OSError):
+                    failure = file_failure(exc, saving=saving or getattr(exc, "filename", None) == staged_out_path)
+                elif comment_mode == "redact_preserve" and "无法保留并脱敏批注" in str(exc):
+                    failure = ExportFailure("DOCX_COMMENT_EXPORT_FAILED", "这些批注无法按当前选项安全改写。",
+                                            "回到复核页核对批注。可在 Word 副本中先处理问题批注，再重新上传；也可选择移除全部批注。", stage="改写 Word 批注")
+                elif "没有可替换的内容" in str(exc):
+                    failure = ExportFailure("EXPORT_NO_REPLACEMENTS_ACK_REQUIRED", "当前选择没有可替换内容。",
+                                            "请选中需处理的位置，或在导出前清单中明确确认零替换。", stage="检查导出选择")
+                elif isinstance(exc, ValueError):
+                    failure = ExportFailure("EXPORT_DOCUMENT_VALIDATION_FAILED", str(exc),
+                                            "按所示位置检查原文或结构。修改副本后重新上传复核；无法定位时请反馈提示。", stage="校验脱敏文书")
+                else:
+                    sys.stderr.write("[document-export] error_type=%s\n" % type(exc).__name__)
+                    failure = ExportFailure("EXPORT_GENERATION_FAILED", "本机服务生成文书或配套文件时遇到异常。",
+                                            "确认原件可打开且项目目录可写后重试。若仍失败，请保留原件并反馈提示。", stage="生成脱敏文书")
+                payload = failure.payload()
+                payload["issues"] = [{"code": failure.code, "severity": "blocking", "stage": "generate",
+                                      "resolution_actions": [failure.advice]}]
+                self._send_json(payload, 409 if isinstance(exc, ExportFailure) or
+                                failure.code == "EXPORT_NO_REPLACEMENTS_ACK_REQUIRED" else 500)
                 return
             shutil.rmtree(stage_dir, ignore_errors=True)
 
@@ -2639,6 +2916,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "session not found"}, 404)
                 return
 
+            if "xlsx_review" in info:
+                self._send_json({"ok": False, "error": "当前 Excel 候选不提供映射还原"}, 400)
+                return
             restore_from_uploaded_source = self.headers.get(
                 "X-Restore-Uploaded-Source") == "1"
             if restore_from_uploaded_source and not (
@@ -2649,22 +2929,37 @@ class AppHandler(BaseHTTPRequestHandler):
             input_path = info["input_path"]
             ext = _ext_of(input_path)
             out_dir = os.path.join(self.state.work_dir, sid, "out")
-            os.makedirs(out_dir, exist_ok=True)
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+            except OSError as exc:
+                self._send_json(file_failure(exc, saving=True, stage="准备保存还原稿").payload(), 500)
+                return
             stem = os.path.splitext(os.path.basename(input_path))[0]
             mapping_path: Optional[str] = None
             restore_kwargs: Dict[str, Any] = {}
             if ctype.startswith("multipart/form-data"):
-                mp = parse_multipart()
+                try:
+                    mp = parse_multipart()
+                except (ValueError, TypeError):
+                    self._send_json({"ok": False, "error": "invalid json"}, 400)
+                    return
                 if "mapping" in mp:
                     fname = _safe_filename(mp["mapping"].get("filename") or "mapping.json")
                     mp_path = os.path.join(self.state.work_dir, sid, fname)
-                    with open(mp_path, "wb") as f:
-                        f.write(mp["mapping"]["data"])
+                    try:
+                        with open(mp_path, "wb") as f:
+                            f.write(mp["mapping"]["data"])
+                    except OSError as exc:
+                        self._send_json(file_failure(exc, saving=True, stage="保存用于还原的映射").payload(), 500)
+                        return
                     mapping_path = mp_path
             elif ctype.startswith("application/json"):
                 try:
                     req = json.loads(body_bytes.decode("utf-8") or "{}")
                 except Exception:
+                    self._send_json({"ok": False, "error": "invalid json"}, 400)
+                    return
+                if not isinstance(req, dict) or not isinstance(req.get("mapping"), (str, type(None))):
                     self._send_json({"ok": False, "error": "invalid json"}, 400)
                     return
                 req_mapping = req.get("mapping")
@@ -2706,11 +3001,25 @@ class AppHandler(BaseHTTPRequestHandler):
                     out_path=out_path,
                 )
             except FileNotFoundError as exc:
-                self._send_json({"ok": False,
-                    "error": "找不到 mapping.json —— 请上传一个 (.json)。"}, 400)
+                if exc.filename == input_path:
+                    failure = file_failure(exc, stage="读取待还原的文书")
+                else:
+                    failure = ExportFailure("RESTORE_MAPPING_MISSING", "找不到用于还原的 JSON 映射。",
+                        "选择与这份脱敏稿配对的 JSON 映射后重试。", stage="读取还原映射")
+                self._send_json(failure.payload(), 400)
+                return
+            except OSError as exc:
+                self._send_json(file_failure(exc, saving=getattr(exc, "filename", None) == out_path,
+                                             stage="读写还原文件").payload(), 500)
+                return
+            except ValueError as exc:
+                self._send_json(ExportFailure("RESTORE_MAPPING_VALIDATION_FAILED", str(exc),
+                    "核对脱敏文书及其对应的 JSON 映射，再重新选择文件。", stage="检查还原数据").payload(), 400)
                 return
             except Exception as exc:
-                self._send_json({"ok": False, "error": f"还原失败：{exc}"}, 500)
+                sys.stderr.write("[document-restore] error_type=%s\n" % type(exc).__name__)
+                self._send_json(ExportFailure("RESTORE_GENERATION_FAILED", "本机服务未能生成还原稿。",
+                    "确认脱敏稿可打开且本机项目目录可写；重试仍失败时请反馈提示。").payload(), 500)
                 return
             self._send_json({
                 "ok": True,

@@ -1,7 +1,7 @@
 """Single-document PDF review interface (simplified)."""
 import json
 
-from contract_ui_notices import EXPORT_REVIEW_NOTICE, EXPORT_UNRECOGNIZED_NOTE
+from contract_ui_notices import EXPORT_FEEDBACK_JS, EXPORT_REVIEW_NOTICE, EXPORT_UNRECOGNIZED_NOTE
 
 
 def page(sid):
@@ -18,7 +18,12 @@ button.primary{{background:#1265a8;color:white;border-color:#1265a8}}button:disa
 main{{display:grid;grid-template-columns:225px minmax(320px,1fr) minmax(320px,1fr);gap:12px;padding:12px;height:calc(100vh - 64px)}}
 #previewstatus.retry{{cursor:pointer;color:#b42318;text-decoration:underline}}aside,.pane{{background:white;border:1px solid #dde3e8;border-radius:9px;overflow:auto;padding:12px}}
 .pane h3{{position:sticky;top:-12px;background:white;margin:-12px -12px 12px;padding:12px;border-bottom:1px solid #ddd;z-index:2}}
-.sheet{{position:relative;display:inline-block;transform-origin:top left;line-height:0}}
+.pane{{scrollbar-gutter:stable}}
+.pdf-zoom{{margin-bottom:6px}}
+.pdf-zoom input{{width:5.5em;font:inherit;padding:5px 6px}}
+.pdf-zoom [aria-pressed="true"]{{background:#e7f2fb}}
+#zoomerror{{margin:4px 0;color:#b42318}}
+.sheet{{position:relative;display:block;width:max-content;transform-origin:top left;line-height:0}}
 .sheet img{{max-width:none;display:block}}.sheet canvas{{position:absolute;inset:0;cursor:crosshair}}
 .pagebtn{{display:flex;align-items:center;gap:8px;width:100%;text-align:left;margin:5px 0}}.pagebtn img{{width:34px;height:46px;object-fit:contain;border:1px solid #ddd;background:white}}.pagebtn.active{{background:#e7f2fb}}
 .dot{{width:9px;height:9px;border-radius:50%;flex:none}}.dot.ok{{background:#0a8b5f}}.dot.warn{{background:#d98200}}.dot.busy{{background:#88939d}}
@@ -56,13 +61,19 @@ details{{margin:8px 0}}details summary{{cursor:pointer;color:#184d7c}}
 <h4>补充敏感原文</h4>
 <input id="termLabel" placeholder="代号名称，如 项目名称" style="width:100%"><input id="termValues" placeholder="原文；别名以分号分隔" style="width:100%"><label><input id="termCase" type="checkbox">同案文书共用</label><button id="termAdd">查找并加入</button>
 </details></aside>
-<section class="pane"><h3>原页 · 点击候选切换处理；拖动框选遮盖</h3><div class="toolbar"><button id="zoomout">－</button><span id="zoomlabel">100%</span><button id="zoomin">＋</button><button id="undo" title="撤销最近一次更改">撤销最近更改</button></div>
+<section class="pane"><h3>原页 · 点击候选切换处理；拖动框选遮盖</h3><form class="toolbar pdf-zoom" id="zoomform">
+<button id="zoomout" type="button" aria-label="两栏缩小">－</button>
+<label for="zoominput">两栏缩放</label><input id="zoominput" type="text" inputmode="numeric" value="100" aria-describedby="zoomhint zoomerror"><span>%</span>
+<button type="submit">应用</button><button id="zoomin" type="button" aria-label="两栏放大">＋</button>
+<button id="zoomreset" type="button">100%</button><button id="zoomfit" type="button" aria-pressed="false">适应宽度</button>
+<button id="undo" type="button" title="撤销最近一次更改">撤销最近更改</button>
+</form><div id="zoomhint" class="muted">50%–200%</div><p id="zoomerror" role="status" hidden></p>
 <p class="muted">印章、签名、漏识别文字请在原页直接拖动框选；已有遮盖可移动、调整或删除。</p>
 <details id="ocrpanel"><summary>逐行核对本页 OCR 文字</summary><p class="muted">包含未命中敏感规则及未纳入自动识别的行。这里的 OCR 分值表示文字识别把握程度；候选置信度用于判断敏感类型，二者不同。识别结果不能替代原页通读，漏项请手工框选。</p><p id="ocrstatus" class="muted" role="status"></p><label><input id="ocrchecked" type="checkbox">我已人工核对本页 OCR 文字</label><div id="ocrlines" class="ocr-rows"></div></details>
 <label id="imageReview" hidden><input id="imageReviewed" type="checkbox">我已检查本页印章、照片和签名，并补框遮盖或确认保留</label>
 <div id="source" class="sheet"><img alt="原页"><canvas></canvas></div></section>
 <section class="pane"><h3>导出预览</h3><p class="muted" id="previewstatus" hidden></p>
-<div id="preview" class="sheet"><img alt="预览页"><canvas></canvas></div>
+<div id="preview" class="sheet"><img alt="预览页"></div>
 <p class="alert info" id="exportdisclaimer"><span>{EXPORT_REVIEW_NOTICE}<small class="notice-secondary">{EXPORT_UNRECOGNIZED_NOTE}</small></span></p>
 <div class="toolbar" style="margin-top:14px"><button id="prev">上一页</button><button id="next">下一页</button><button class="primary" id="export">导出脱敏 PDF</button></div>
 <div id="exportgate" role="alert"></div>
@@ -72,14 +83,46 @@ details{{margin:8px 0}}details summary{{cursor:pointer;color:#184d7c}}
 <details><summary>导出说明</summary><p class="muted">代号覆盖原文字像素，短框依次使用短中文类型或字母加编号（如机构O1、姓名P1）。PDF导出将每页转换为图片，不保留文本层，不生成映射文件，无法用工具还原；可点击链接会被移除。批注及批注人名称可能保留，请逐页核对。检测到的未处理项必须处理或明确保留后才能导出；未识别内容仍按原文保留。</p></details>
 </section></main>
 <script>
+{EXPORT_FEEDBACK_JS}
 const sid={sid_json};let p=null,cur=1,zoom=1,imgUrl='',previewUrl='',drag=null,drawMode='',activeRegion=null,renderId=0,ocrRequestId=0,ocrSelection=null,thumbTasks={{}},warnOpen=false;
 const $=id=>document.getElementById(id);
+const MIN_ZOOM_PERCENT=50,MAX_ZOOM_PERCENT=200,ZOOM_STEP=25;
+const sheets=['source','preview'].map(id=>{{
+    const element=$(id);
+    return {{element,pane:element.closest('.pane'),image:element.querySelector('img'),
+        canvas:element.querySelector('canvas'),page:null}};
+}});
+let fitWidth=false,scrollLeader=sheets[0];
+const mirroredScroll=new WeakMap();
 const candidateBoxes=a=>Array.isArray(a.bboxes)&&a.bboxes.length?a.bboxes:[a.bbox];
 async function api(path,body){{const r=await fetch(path,{{method:body?'POST':'GET',headers:{{'Content-Type':'application/json','X-Local-Project':'1'}},body:body?JSON.stringify(body):undefined}});const j=await r.json();if(!r.ok||j.ok===false){{let e=Error(j.error||'操作失败');e.code=j.code||'';throw e}}return j;}}
 function err(e){{let message=String(e.message||e);if(/Failed to fetch|NetworkError|Load failed/i.test(message))message='本地脱敏服务连接中断。请重新运行工具；启动工具后如果出现黑色窗口，请保持开启；关闭后将无法正常使用。';$('error').textContent=message}}
-function clearExportGate(){{let el=$('exportgate');el.textContent='';el.style.display='none';el.dataset.shown='';}}
-function showExportGate(message){{let el=$('exportgate');el.textContent=message;el.style.display='block';el.dataset.shown='1';}}
-function syncExportGate(){{let el=$('exportgate');if(el.dataset.shown!=='1')return;let issue=(p?.review_evaluation?.hard_issues||[])[0];if(!issue){{clearExportGate();return}}if(issue.action)el.textContent=issue.action;}}
+function clearExportGate(){{let el=$('exportgate');el.textContent='';el.style.display='none';el.dataset.reviewGate='';}}
+function showExportGate(details){{
+    const el=$('exportgate');
+    showExportProblem(el,details);
+    el.style.display='block';
+    el.dataset.reviewGate=details.code==='PDF_DISPOSITION_REQUIRED'?'1':'';
+    const pageNumber=details.location?.pages?.[0];
+    if(pageNumber){{
+        const go=document.createElement('button');
+        go.textContent='前往第 '+pageNumber+' 页';
+        go.onclick=()=>show(pageNumber);
+        el.append(go);
+    }}else if(details.code==='PDF_ORIGINAL_UNAVAILABLE'){{
+        const relink=document.createElement('button');
+        relink.textContent='重新关联原件';
+        relink.onclick=()=>$('relinkFile').click();
+        el.append(relink);
+    }}
+}}
+function syncExportGate(){{
+    if($('exportgate').dataset.reviewGate!=='1')return;
+    const issue=p?.review_evaluation?.hard_issues?.[0];
+    if(!issue){{clearExportGate();return}}
+    showExportGate({{stage:'检查 PDF 复核状态',code:'PDF_DISPOSITION_REQUIRED',
+        error:issue.action,advice:'前往相关页面按提示处理，再重新导出。',location:{{pages:issue.pages||[]}}}});
+}}
 function setProject(next){{p=next;inspectedUnlocatedId=null;$('error').textContent='';updateWarn();syncExportGate();}}
 function reviewEntry(a,collection='candidates'){{return (p.review_evaluation?.states||[]).find(s=>s.candidate_ref.collection===collection&&s.candidate_ref.id===a.id)}}
 function reviewState(a,collection='candidates'){{return reviewEntry(a,collection)?.state||'pending'}}
@@ -95,12 +138,33 @@ function renderPolicy(){{if(!p)return;let box=$('notice');box.replaceChildren();
 function pageDot(x){{if(x.stage!=='ready')return 'busy';if(x.ocr==='failed'||x.ocr==='empty'||x.ocr_supplement==='failed'||x.ocr_supplement==='empty')return 'warn';let stats=x.ocr_line_stats||{{}};if(Object.values(stats).some(v=>v>0)||x.dropped_lines>0)return 'warn';return 'ok'}}
 function renderList(){{$('pages').replaceChildren();p.pages.forEach(x=>{{let b=document.createElement('button');b.className='pagebtn'+(x.page===cur?' active':'');if(x.stage==='ready'){{let im=document.createElement('img');im.alt='第 '+x.page+' 页缩略图';b.append(im);if(!thumbTasks[x.page])thumbTasks[x.page]=fetch('/api/pdf/thumb/'+sid+'/'+x.page,{{headers:{{'X-Local-Project':'1'}}}}).then(r=>{{if(!r.ok)throw Error('缩略图失败');return r.blob()}}).then(blob=>URL.createObjectURL(blob)).catch(()=>{{delete thumbTasks[x.page];return null}});thumbTasks[x.page].then(url=>{{if(url&&im.isConnected)im.src=url}})}}
 let dot=document.createElement('span');dot.className='dot '+pageDot(x);b.append(dot,document.createTextNode(`第 ${{x.page}} 页${{x.ocr==='failed'?' · 识别失败':x.ocr==='empty'?' · 未识别文字':''}}`));b.onclick=()=>show(x.page);$('pages').append(b)}})}}
-async function show(n){{if(!p||n<1||n>p.pages.length)return;if(n!==cur){{warnOpen=false;ocrSelection=null;$('ocrfocus')?.remove()}}cur=n;renderList();updateWarn();loadOcrLines();let x=p.pages[n-1];if(x.stage!=='ready')return;let id=++renderId;const pageReq=fetch('/api/pdf/page/'+sid+'/'+n,{{headers:{{'X-Local-Project':'1'}}}}),previewReq=fetch('/api/pdf/preview/'+sid+'/'+n,{{headers:{{'X-Local-Project':'1'}}}});previewStatus('导出预览生成中…',false);try{{let r=await pageReq;if(!r.ok)throw Error('页面图像尚未准备');let a=URL.createObjectURL(await r.blob());if(id!==renderId){{URL.revokeObjectURL(a);return}}
+async function show(n){{if(!p||n<1||n>p.pages.length)return;if(n!==cur){{warnOpen=false;ocrSelection=null;drag=null;$('ocrfocus')?.remove()}}cur=n;renderList();updateWarn();loadOcrLines();let x=p.pages[n-1],id=++renderId;if(x.stage!=='ready')return;const pageReq=fetch('/api/pdf/page/'+sid+'/'+n,{{headers:{{'X-Local-Project':'1'}}}}),previewReq=fetch('/api/pdf/preview/'+sid+'/'+n,{{headers:{{'X-Local-Project':'1'}}}});previewStatus('导出预览生成中…',false);try{{let r=await pageReq;if(!r.ok)throw Error('页面图像尚未准备');let a=URL.createObjectURL(await r.blob());if(id!==renderId){{URL.revokeObjectURL(a);return}}
 if(imgUrl)URL.revokeObjectURL(imgUrl);imgUrl=a;setSheet('source',a,x);updateWarn();draw();}}catch(e){{err(e);return}}
 try{{let s=await previewReq;if(!s.ok)throw Error('预览尚未生成');let b=URL.createObjectURL(await s.blob());if(id!==renderId){{URL.revokeObjectURL(b);return}}if(previewUrl)URL.revokeObjectURL(previewUrl);previewUrl=b;setSheet('preview',b,x);previewStatus('',false)}}catch(e){{if(id===renderId)previewStatus('导出预览生成失败，点此重试',true)}}}}
-function setSheet(key,url,x){{let box=$(key),im=box.querySelector('img'),cv=box.querySelector('canvas');im.onload=()=>{{im.style.width=Math.round(x.width*zoom)+'px';im.style.height=Math.round(x.height*zoom)+'px';cv.width=im.clientWidth;cv.height=im.clientHeight;draw()}};im.src=url}}
+function sizeSheet(sheet){{
+    if(!sheet.page)return;
+    const width=Math.max(1,Math.round(sheet.page.width*zoom));
+    const height=Math.max(1,Math.round(sheet.page.height*zoom));
+    sheet.image.style.width=width+'px';
+    sheet.image.style.height=height+'px';
+    if(sheet.canvas){{
+        if(sheet.canvas.width!==width)sheet.canvas.width=width;
+        if(sheet.canvas.height!==height)sheet.canvas.height=height;
+    }}
+}}
+function setSheet(key,url,page){{
+    const sheet=sheets.find(item=>item.element.id===key);
+    sheet.image.onload=()=>{{
+        if(page.page!==cur)return;
+        sheet.page=page;
+        if(fitWidth)applyZoom(fitScale(page),document.activeElement!==$('zoominput'));
+        sizeSheet(sheet);
+        if(sheet.canvas)draw(false);
+    }};
+    sheet.image.src=url;
+}}
 function previewStatus(text,retry){{let el=$('previewstatus');el.textContent=text;el.hidden=!text;el.classList.toggle('retry',!!retry);el.onclick=retry?()=>show(cur):null}}
-async function loadOcrLines(){{let token=++ocrRequestId,number=cur,x=p?.pages?.[cur-1];$('ocrchecked').checked=!!x?.ocr_checked;$('ocrchecked').disabled=x?.stage!=='ready';if(!$('ocrpanel').open)return;$('ocrlines').replaceChildren();$('ocrstatus').textContent='正在读取本页识别行…';try{{let data=await api('/api/pdf/ocr-lines/'+sid+'/'+number);if(token!==ocrRequestId||number!==cur)return;if(!data.available){{$('ocrstatus').textContent=x?.stage!=='ready'?'本页识别尚未完成。':'此项目未保存逐行数据；可重试本页识别后查看。';return}}$('ocrstatus').textContent='共 '+data.lines.length+' 行；OCR 人工核对：'+(data.checked?'已确认':'尚未确认')+'。此状态与候选处置分别记录。';if(!data.lines.length)$('ocrstatus').textContent+=' 未识别到文字仍须核对原页。';for(let line of data.lines){{let row=document.createElement('button');row.type='button';row.className='ocr-row';row.setAttribute('aria-pressed',String(ocrSelection?.page===cur&&ocrSelection?.index===line.index));row.append(document.createTextNode(line.index+'. '+(line.text||'（空白行）')));let meta=document.createElement('small');meta.textContent='OCR 分值：'+(line.confidence===null?'未提供':line.confidence.toFixed(2))+' · '+(line.bbox?'点击定位原页':'无可靠坐标，请在原页查找')+(line.issues.length?' · '+line.issues.join('；'):'');row.append(meta);row.onclick=()=>{{ocrSelection={{...line,page:cur}};for(let button of $('ocrlines').querySelectorAll('button'))button.setAttribute('aria-pressed',String(button===row));draw();if(!line.bbox)return;let marker=$('ocrfocus');if(!marker){{marker=document.createElement('div');marker.id='ocrfocus';$('source').append(marker)}}let b=line.bbox;Object.assign(marker.style,{{position:'absolute',pointerEvents:'none',left:b[0]*zoom+'px',top:b[1]*zoom+'px',width:(b[2]-b[0])*zoom+'px',height:(b[3]-b[1])*zoom+'px'}});marker.scrollIntoView({{block:'center',inline:'nearest',behavior:'smooth'}});}};$('ocrlines').append(row)}}}}catch(e){{if(token===ocrRequestId)$('ocrstatus').textContent=e.message}}}}
+async function loadOcrLines(){{let token=++ocrRequestId,number=cur,x=p?.pages?.[cur-1];$('ocrchecked').checked=!!x?.ocr_checked;$('ocrchecked').disabled=x?.stage!=='ready';if(!$('ocrpanel').open)return;$('ocrlines').replaceChildren();$('ocrstatus').textContent='正在读取本页识别行…';try{{let data=await api('/api/pdf/ocr-lines/'+sid+'/'+number);if(token!==ocrRequestId||number!==cur)return;if(!data.available){{$('ocrstatus').textContent=x?.stage!=='ready'?'本页识别尚未完成。':'此项目未保存逐行数据；可重试本页识别后查看。';return}}$('ocrstatus').textContent='共 '+data.lines.length+' 行；OCR 人工核对：'+(data.checked?'已确认':'尚未确认')+'。此状态与候选处置分别记录。';if(!data.lines.length)$('ocrstatus').textContent+=' 未识别到文字仍须核对原页。';for(let line of data.lines){{let row=document.createElement('button');row.type='button';row.className='ocr-row';row.setAttribute('aria-pressed',String(ocrSelection?.page===cur&&ocrSelection?.index===line.index));row.append(document.createTextNode(line.index+'. '+(line.text||'（空白行）')));let meta=document.createElement('small');meta.textContent='OCR 分值：'+(line.confidence===null?'未提供':line.confidence.toFixed(2))+' · '+(line.bbox?'点击定位原页':'无可靠坐标，请在原页查找')+(line.issues.length?' · '+line.issues.join('；'):'');row.append(meta);row.onclick=()=>{{ocrSelection={{...line,page:cur}};for(let button of $('ocrlines').querySelectorAll('button'))button.setAttribute('aria-pressed',String(button===row));draw();if(!line.bbox)return;updateOcrMarker().scrollIntoView({{block:'center',inline:'nearest',behavior:'smooth'}});}};$('ocrlines').append(row)}}}}catch(e){{if(token===ocrRequestId)$('ocrstatus').textContent=e.message}}}}
 $('ocrpanel').ontoggle=()=>loadOcrLines();
 $('ocrchecked').onchange=()=>change('ocr-review',{{page:cur,checked:$('ocrchecked').checked}});
 $('imageReviewed').onchange=()=>change('review',{{page:cur,manual_confirm:$('imageReviewed').checked}});
@@ -144,15 +208,32 @@ function updateSummary(){{if(!p)return;let el=$('exportstatus');let ev=p.review_
 let line1='本次处置：替换 '+replaced+' 处、按框处理 '+boxed+' 处、人工遮盖 '+covered+' 处；机器自动处理 '+automatic+' 处；另有 '+preserved+' 处候选保留原文（按类型明确保留 '+defaultKept+' 处，手动保留 '+userKept+' 处）';
 let line2=red?('待确认 '+red+' 处，处理或明确保留后才能导出'):'无待确认项';
 el.textContent=p.stage==='processing'?'扫描中，完成后可导出。':p.stage==='exported'?'已导出。外发文件不含原件与映射表。':line1+'；'+line2+'。点「导出脱敏 PDF」即可。'}}
-function draw(){{if(!p)return;let x=p.pages[cur-1],w=x.width,h=x.height,c=$('source').querySelector('canvas'),ctx=c.getContext('2d');ctx.clearRect(0,0,c.width,c.height);let sx=c.width/w,sy=c.height/h;if(!sx||!sy)return;
+function updateOcrMarker(){{
+    if(ocrSelection?.page!==cur||!ocrSelection.bbox)return;
+    let marker=$('ocrfocus');
+    if(!marker){{
+        marker=document.createElement('div');
+        marker.id='ocrfocus';
+        $('source').append(marker);
+    }}
+    const [left,top,right,bottom]=ocrSelection.bbox;
+    const page=p.pages[cur-1],canvas=sheets[0].canvas;
+    const scaleX=canvas.width/page.width,scaleY=canvas.height/page.height;
+    Object.assign(marker.style,{{position:'absolute',pointerEvents:'none',
+        left:left*scaleX+'px',top:top*scaleY+'px',
+        width:(right-left)*scaleX+'px',height:(bottom-top)*scaleY+'px'}});
+    return marker;
+}}
+function draw(updateCandidates=true){{if(!p)return;let x=p.pages[cur-1],w=x.width,h=x.height,c=$('source').querySelector('canvas'),ctx=c.getContext('2d');ctx.clearRect(0,0,c.width,c.height);let sx=c.width/w,sy=c.height/h;if(!sx||!sy)return;
 for(let a of p.candidates.filter(a=>a.page===cur)){{let state=reviewState(a),applied=['redact','redact-box','covered','manual-covered'].includes(state);ctx.strokeStyle=applied?'#0a8b5f':['keep','policy-excluded'].includes(state)?'#88939d':'#dc8b19';ctx.setLineDash(applied?[]:[5,4]);ctx.lineWidth=2;for(let b of candidateBoxes(a))ctx.strokeRect(b[0]*sx,b[1]*sy,(b[2]-b[0])*sx,(b[3]-b[1])*sy)}}
 ctx.setLineDash([]);if(ocrSelection?.page===cur&&ocrSelection.bbox){{let b=ocrSelection.bbox;ctx.fillStyle='rgba(51,85,255,.15)';ctx.fillRect(b[0]*sx,b[1]*sy,(b[2]-b[0])*sx,(b[3]-b[1])*sy);ctx.strokeStyle='#3355ff';ctx.lineWidth=3;ctx.strokeRect(b[0]*sx,b[1]*sy,(b[2]-b[0])*sx,(b[3]-b[1])*sy)}}for(let a of p.regions.filter(a=>a.page===cur)){{let b=a.bbox;ctx.fillStyle='rgba(0,0,0,.3)';ctx.fillRect(b[0]*sx,b[1]*sy,(b[2]-b[0])*sx,(b[3]-b[1])*sy);ctx.strokeStyle='#0a8b5f';ctx.strokeRect(b[0]*sx,b[1]*sy,(b[2]-b[0])*sx,(b[3]-b[1])*sy)}}
 if(drag){{ctx.strokeStyle='#d60';ctx.lineWidth=2;ctx.strokeRect(drag[0]*sx,drag[1]*sy,(drag[2]-drag[0])*sx,(drag[3]-drag[1])*sy)}}
-renderCandidates()}}
+updateOcrMarker();
+if(updateCandidates)renderCandidates()}}
 async function change(action,fields){{try{{await api('/api/pdf/update/'+sid,{{action,revision:p.revision,...fields}});let j=await api('/api/pdf/status/'+sid);setProject(j.project);if(p.stage==='processing'){{await refresh()}}else{{await show(cur);renderPolicy();updateSummary();}}}}catch(e){{let j=await api('/api/pdf/status/'+sid).catch(()=>null);if(j){{setProject(j.project);await show(cur);renderPolicy();updateSummary()}}err(e)}}}}
 function pos(e){{let c=$('source').querySelector('canvas'),r=c.getBoundingClientRect(),x=p.pages[cur-1];return [Math.max(0,Math.min(x.width,(e.clientX-r.left)*x.width/r.width)),Math.max(0,Math.min(x.height,(e.clientY-r.top)*x.height/r.height))]}}
 let canvas=$('source').querySelector('canvas'),start=null,base=null,activeUnlocatedId=null,activeCandidateRef=null,inspectedUnlocatedId=null;
-canvas.onpointerdown=e=>{{if(!p||p.stage==='processing')return;let q=pos(e);activeRegion=(!activeCandidateRef&&!activeUnlocatedId)&&p.regions.find(a=>a.page===cur&&q[0]>=a.bbox[0]&&q[0]<=a.bbox[2]&&q[1]>=a.bbox[1]&&q[1]<=a.bbox[3]);if(activeRegion){{base=activeRegion.bbox.slice();start=q;drawMode=(Math.abs(q[0]-base[2])<10/zoom&&Math.abs(q[1]-base[3])<10/zoom)?'resize':'move';drag=base.slice()}}
+canvas.onpointerdown=e=>{{if(!p||p.stage==='processing'||sheets[0].page?.page!==cur)return;let q=pos(e);activeRegion=(!activeCandidateRef&&!activeUnlocatedId)&&p.regions.find(a=>a.page===cur&&q[0]>=a.bbox[0]&&q[0]<=a.bbox[2]&&q[1]>=a.bbox[1]&&q[1]<=a.bbox[3]);if(activeRegion){{base=activeRegion.bbox.slice();start=q;drawMode=(Math.abs(q[0]-base[2])<10/zoom&&Math.abs(q[1]-base[3])<10/zoom)?'resize':'move';drag=base.slice()}}
 else{{let hit=(!activeCandidateRef&&!activeUnlocatedId)&&p.candidates.find(a=>a.page===cur&&candidateBoxes(a).some(b=>q[0]>=b[0]&&q[0]<=b[2]&&q[1]>=b[1]&&q[1]<=b[3]));if(hit){{change('candidate',{{page:cur,id:hit.id,selected:!(reviewState(hit)==='redact'||reviewState(hit)==='redact-box')}});return}}
 drawMode='add';drag=[q[0],q[1],q[0],q[1]]}}canvas.setPointerCapture(e.pointerId)}};
 canvas.onpointermove=e=>{{if(!drag)return;let q=pos(e),pg=p.pages[cur-1];if(drawMode==='add'){{drag[2]=q[0];drag[3]=q[1]}}else if(drawMode==='resize'){{drag[2]=Math.max(base[0]+2,q[0]);drag[3]=Math.max(base[1]+2,q[1])}}else{{let dx=q[0]-start[0],dy=q[1]-start[1];dx=Math.max(-base[0],Math.min(pg.width-base[2],dx));dy=Math.max(-base[1],Math.min(pg.height-base[3],dy));drag=[base[0]+dx,base[1]+dy,base[2]+dx,base[3]+dy]}}draw()}};
@@ -168,11 +249,106 @@ $('retry').onclick=async()=>{{try{{await api('/api/pdf/control/'+sid,{{action:'r
 $('retryPage').onclick=()=>change('retry-page',{{page:cur}});
 $('syncCase').onclick=async()=>{{try{{let j=await api('/api/pdf/sync-case/'+sid,{{}});setProject(j.project);await refresh()}}catch(e){{err(e)}}}};
 $('termAdd').onclick=async()=>{{try{{let label=$('termLabel').value.trim(),values=$('termValues').value.split(/[;；]/).map(x=>x.trim()).filter(Boolean);let j=await api('/api/pdf/term/'+sid,{{term:{{label,values}},scope:$('termCase').checked?'case':'document'}});setProject(j.project);$('termValues').value='';$('termLabel').value='';await refresh()}}catch(e){{err(e)}}}};
-function setZoom(z){{zoom=Math.max(.5,Math.min(2,z));$('zoomlabel').textContent=Math.round(zoom*100)+'%';show(cur)}}$('zoomin').onclick=()=>setZoom(zoom+.25);$('zoomout').onclick=()=>setZoom(zoom-.25);
-async function doExport(confirm){{clearExportGate();try{{$('exportconfirm').style.display='none';let j=await api('/api/pdf/export/'+sid,{{revision:p.revision,confirm:!!confirm}});if(j.needs_confirm){{renderExportConfirm(j.red||[],j.soft||[]);return}}
+function fitScale(page){{
+    const widths=sheets.map(({{pane}})=>{{
+        const style=getComputedStyle(pane);
+        return pane.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight);
+    }});
+    return Math.min(...widths)>0 ? Math.min(MAX_ZOOM_PERCENT/100,Math.min(...widths)/page.width) : zoom;
+}}
+function sheetOffset(sheet){{
+    const bounds=sheet.element.getBoundingClientRect(),viewport=sheet.pane.getBoundingClientRect();
+    return {{left:viewport.left-bounds.left,top:viewport.top-bounds.top}};
+}}
+function movePane(sheet,left,top){{
+    const {{pane}}=sheet;
+    const beforeLeft=pane.scrollLeft,beforeTop=pane.scrollTop;
+    pane.scrollLeft+=left;
+    pane.scrollTop+=top;
+    if(pane.scrollLeft!==beforeLeft||pane.scrollTop!==beforeTop){{
+        mirroredScroll.set(pane,[pane.scrollLeft,pane.scrollTop]);
+    }}
+}}
+function alignPane(from,to){{
+    if(from.page?.page!==cur||to.page?.page!==cur)return;
+    const target=sheetOffset(from),current=sheetOffset(to);
+    movePane(to,target.left-current.left,target.top-current.top);
+}}
+function applyZoom(scale,updateInput=true){{
+    if(scale!==zoom){{
+        const before=sheetOffset(scrollLeader);
+        const ratio=scale/zoom;
+        zoom=scale;
+        sheets.forEach(sizeSheet);
+        const after=sheetOffset(scrollLeader);
+        const left=Math.max(0,before.left)*ratio-Math.max(0,after.left);
+        const top=Math.max(0,before.top)*ratio-Math.max(0,after.top);
+        movePane(scrollLeader,left,top);
+        alignPane(scrollLeader,sheets.find(sheet=>sheet!==scrollLeader));
+        if(sheets[0].page?.page===cur)draw(false);
+    }}
+    const input=$('zoominput');
+    if(updateInput){{
+        input.value=String(Math.round(zoom*100));
+    }}
+    $('zoomfit').setAttribute('aria-pressed',String(fitWidth));
+}}
+function clearZoomError(){{
+    $('zoominput').removeAttribute('aria-invalid');
+    $('zoomerror').hidden=true;
+}}
+function setManualZoom(percent){{
+    fitWidth=false;
+    clearZoomError();
+    applyZoom(percent/100);
+}}
+$('zoomform').onsubmit=e=>{{
+    e.preventDefault();
+    const input=$('zoominput');
+    const match=input.value.trim().match(/^([0-9]+)\s*[%％]?$/);
+    const percent=match?Number(match[1]):NaN;
+    if(!Number.isFinite(percent)||percent<MIN_ZOOM_PERCENT||percent>MAX_ZOOM_PERCENT){{
+        input.setAttribute('aria-invalid','true');
+        $('zoomerror').textContent='请输入 50 到 200 之间的整数百分比，例如 83%。';
+        $('zoomerror').hidden=false;
+        input.focus();
+        return;
+    }}
+    setManualZoom(percent);
+}};
+$('zoominput').onkeydown=e=>{{
+    if(e.key==='Escape'){{clearZoomError();applyZoom(zoom)}}
+}};
+function stepZoom(delta){{
+    const percent=Math.round(zoom*100)+delta;
+    setManualZoom(Math.min(MAX_ZOOM_PERCENT,Math.max(MIN_ZOOM_PERCENT,percent)));
+}}
+$('zoomin').onclick=()=>stepZoom(ZOOM_STEP);
+$('zoomout').onclick=()=>stepZoom(-ZOOM_STEP);
+$('zoomreset').onclick=()=>setManualZoom(100);
+function updateFitZoom(){{
+    const page=p?.pages[cur-1];
+    if(fitWidth&&page?.width>0)applyZoom(fitScale(page),document.activeElement!==$('zoominput'));
+}}
+$('zoomfit').onclick=()=>{{
+    fitWidth=true;
+    clearZoomError();
+    applyZoom(zoom);
+    updateFitZoom();
+}};
+const zoomObserver=new ResizeObserver(updateFitZoom);
+for(const sheet of sheets)zoomObserver.observe(sheet.pane);
+async function doExport(confirm){{
+clearExportGate();$('exportconfirm').style.display='none';$('exportstatus').textContent='';$('exportnotes').textContent='';
+const j=await requestExportResult('/api/pdf/export/'+sid,{{
+    method:'POST',headers:{{'Content-Type':'application/json','X-Local-Project':'1'}},
+    body:JSON.stringify({{revision:p.revision,confirm:!!confirm}})
+}},'生成脱敏 PDF');
+if(!j.ok){{showExportGate(j);return}}
+if(j.needs_confirm){{renderExportConfirm(j.red||[],j.soft||[]);return}}
 $('exportstatus').textContent='导出完成。外发文件不含原件与映射表。';
 $('exportnotes').textContent=(j.notes&&j.notes.length)?('导出提示（无需处理）：\n'+j.notes.join('\n')):'';
-location.href=j.url;await refresh()}}catch(e){{if(e.code==='PDF_DISPOSITION_REQUIRED')showExportGate(e.message||String(e));else{{clearExportGate();err(e)}}$('exportstatus').textContent=''}}}}
+location.href=j.url;await refresh()}}
 function renderExportConfirm(red,notes){{let box=$('exportconfirm');box.replaceChildren();let t=document.createElement('div');t.innerHTML='<b>导出前请知悉</b>';box.append(t);let ul=document.createElement('ul');red.forEach(s=>{{let li=document.createElement('li');li.textContent=s;ul.append(li)}});box.append(ul);if(notes&&notes.length){{let g=document.createElement('div');g.className='muted';g.style.marginTop='6px';g.textContent='以下为非阻断提示，无需处理：';let ul2=document.createElement('ul');notes.forEach(s=>{{let li=document.createElement('li');li.textContent=s;ul2.append(li)}});g.append(ul2);box.append(g)}}let row=document.createElement('div');row.className='toolbar';let go=document.createElement('button');go.className='primary';go.textContent='我已知悉，仍要导出';go.onclick=()=>doExport(true);let back=document.createElement('button');back.textContent='返回处理';back.onclick=()=>box.style.display='none';row.append(go,back);box.append(row);box.style.display='block'}}
 $('export').onclick=()=>doExport(false);
 $('original').onclick=async()=>{{try{{const r=await fetch('/api/pdf/original/'+sid,{{headers:{{'X-Local-Project':'1'}}}});if(!r.ok)throw Error((await r.json()).error||'原件不可用');const a=document.createElement('a'),u=URL.createObjectURL(await r.blob());a.href=u;a.download='原始PDF.pdf';a.click();setTimeout(()=>URL.revokeObjectURL(u),30000)}}catch(e){{err(e)}}}};
@@ -180,6 +356,15 @@ $('relink').onclick=()=>$('relinkFile').click();
 $('relinkFile').onchange=async()=>{{try{{let file=$('relinkFile').files[0];if(!file)return;let fd=new FormData();fd.append('file',file);let r=await fetch('/api/pdf/relink/'+sid,{{method:'POST',headers:{{'X-Local-Project':'1'}},body:fd}}),j=await r.json();if(!r.ok)throw Error(j.error||'关联失败');$('error').textContent='原件校验通过，已重新关联'}}catch(e){{err(e)}}}};
 let healthFailures=0;
 setInterval(async function(){{if(document.hidden)return;try{{let r=await fetch('/health',{{cache:'no-store'}});if(!r.ok)throw Error('offline');let j=await r.json();if(j.service!=='contract_app_server')throw Error('offline');healthFailures=0;}}catch(e){{healthFailures++;if(healthFailures>=2&&!$('error').textContent)err(Error('Failed to fetch'));}}}},12000);
-(function(){{let a=$('source'),b=$('preview'),pa=a.closest('.pane'),pb=b.closest('.pane');function sync(from,fs,to,ts){{if(from.__mirrored){{from.__mirrored=false;return}}let f=fs.getBoundingClientRect(),fp=from.getBoundingClientRect(),t=ts.getBoundingClientRect(),tp=to.getBoundingClientRect(),top=to.scrollTop,left=to.scrollLeft;to.__mirrored=true;to.scrollTop+=(t.top-tp.top)-(f.top-fp.top);to.scrollLeft+=(t.left-tp.left)-(f.left-fp.left);if(to.scrollTop===top&&to.scrollLeft===left)to.__mirrored=false}}pa.addEventListener('scroll',()=>sync(pa,a,pb,b),{{passive:true}});pb.addEventListener('scroll',()=>sync(pb,b,pa,a),{{passive:true}})}})();
+for(const [index,sheet] of sheets.entries()){{
+    const {{pane}}=sheet;
+    pane.addEventListener('scroll',()=>{{
+        const previous=mirroredScroll.get(pane);
+        mirroredScroll.delete(pane);
+        if(previous?.[0]===pane.scrollLeft&&previous[1]===pane.scrollTop)return;
+        scrollLeader=sheet;
+        alignPane(sheet,sheets[1-index]);
+    }},{{passive:true}});
+}}
 refresh();
 </script></body></html>'''.encode('utf-8')

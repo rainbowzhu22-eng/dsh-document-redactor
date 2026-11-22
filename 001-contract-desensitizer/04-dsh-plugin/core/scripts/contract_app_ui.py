@@ -15,7 +15,7 @@ import re
 import urllib.parse
 from typing import Any, Dict
 
-from contract_ui_notices import EXPORT_REVIEW_NOTICE, EXPORT_UNRECOGNIZED_NOTE
+from contract_ui_notices import EXPORT_FEEDBACK_JS, EXPORT_REVIEW_NOTICE, EXPORT_UNRECOGNIZED_NOTE
 
 APP_TITLE = "文书脱敏 / 还原"
 APP_SUBTITLE = "Legal Document Redactor"
@@ -633,7 +633,7 @@ UPLOAD_BODY = r"""
 
       <div class="card">
         <h2><span class="step-n">2</span>上传文书</h2>
-        <div class="alert info" id="uploadHelp" style="margin:0 0 12px">支持DOCX、PDF、TXT、MD；诉讼案号、法院名称及公文/机构编号均作为候选显示，是否脱敏由您在对照页选择。</div>
+        <div class="alert info" id="uploadHelp" style="margin:0 0 12px">支持DOCX、PDF、TXT、MD、XLSX（脱敏）；诉讼案号、法院名称及公文/机构编号均作为候选显示，是否脱敏由您在对照页选择。</div>
         <div class="alert info" id="local-service-note" style="margin:0 0 12px">启动工具后如果出现黑色窗口，请保持开启；关闭后将无法正常使用。</div>
         <label class="field" style="display:block;margin-bottom:12px">案件或项目名称（可选；后续文书请填写完全相同的名称）<br>
           <input type="text" name="case_name" id="case-name" maxlength="80" placeholder="例如：某某案或某项目" style="width:100%;padding:10px;margin-top:5px">
@@ -642,8 +642,8 @@ UPLOAD_BODY = r"""
         <div class="drop" id="drop">
           <div class="ic">📄</div>
           <p class="t">把文件拖到这里，或点击选择</p>
-          <p class="h" id="fileTypes">支持 .docx / .pdf / .txt / .md · 单个文件不超过 100 MB</p>
-          <input type="file" name="file" id="file-input" accept=".docx,.pdf,.txt,.md">
+          <p class="h" id="fileTypes">支持 .docx / .pdf / .txt / .md / .xlsx · 单个文件不超过 100 MB</p>
+          <input type="file" name="file" id="file-input" accept=".docx,.pdf,.txt,.md,.xlsx">
         </div>
         <div id="policy-wrap" style="margin-top:12px">
           <label class="field" style="display:block">金额、日期处理策略<br>
@@ -805,11 +805,11 @@ function syncFileMode(){
   var help=document.getElementById('uploadHelp');
   help.textContent=modeInput.value==='restore'
     ? '文字映射还原须提供对应的mapping.json。PDF原件请从本机历史项目取回。'
-    : '支持DOCX、PDF、TXT、MD。PDF逐页核对；案号、法院名称及公文/机构编号候选在对照页由您选择是否脱敏。';
+    : '支持DOCX、PDF、TXT、MD、XLSX（脱敏）。PDF逐页核对；案号、法院名称及公文/机构编号候选在对照页由您选择是否脱敏。';
   document.getElementById('fileTypes').textContent=modeInput.value==='restore'
     ? '支持 .docx / .txt / .md · PDF原件从历史项目取回'
-    : '支持 .docx / .pdf / .txt / .md · 单个文件不超过 100 MB';
-  fileInput.accept=modeInput.value==='restore'?'.docx,.txt,.md':'.docx,.pdf,.txt,.md';
+    : '支持 .docx / .pdf / .txt / .md / .xlsx · 单个文件不超过 100 MB';
+  fileInput.accept=modeInput.value==='restore'?'.docx,.txt,.md':'.docx,.pdf,.txt,.md,.xlsx';
   document.getElementById('policy-wrap').hidden=modeInput.value==='restore';
   updatePolicyHelp();
   syncBtn();
@@ -964,6 +964,7 @@ __HINT__
 </div>
 
 <script>
+__EXPORT_FEEDBACK__
 var SID='__SID__', FILE='__FILENAME__', RESTORE_FROM_REVIEW=__RESTORE_FROM_REVIEW__;
 
 function okBox(url,name,extra){
@@ -976,15 +977,14 @@ async function runRestore(){
   try{
     var restoreHeaders={'Content-Type':'application/json'};
     if(RESTORE_FROM_REVIEW)restoreHeaders['X-Restore-Uploaded-Source']='1';
-    var r=await fetch('/api/restore/'+SID,{method:'POST',headers:restoreHeaders,body:JSON.stringify({mapping:null})});
-    var j=await r.json();
+    var j=await requestExportResult('/api/restore/'+SID,{method:'POST',headers:restoreHeaders,body:JSON.stringify({mapping:null})},'还原文书');
     if(j.ok){
       var warn=(j.missing&&j.missing.length)?('<div class="alert warn" style="margin-top:10px"><span class="i">⚠</span><span>有 '+j.missing.length+' 个占位符未在文档中找到，可能已被手工修改。</span></div>'):'';
       out.innerHTML=okBox(j.output_url,j.output_name,j.applied)+warn;
     }else{
-      out.innerHTML='<div class="alert err"><span class="i">✗</span><span>还原失败：'+(j.error||'未知错误')+'</span></div>';
+      showExportProblem(out,j);
     }
-  }catch(e){ out.innerHTML='<div class="alert err"><span class="i">✗</span><span>请求失败：'+String(e)+'</span></div>'; }
+  }catch(e){ showExportProblem(out,{stage:'还原文书',error:'未能显示还原结果。',advice:'请先查看历史项目是否已有还原稿，再重试。'}); }
 }
 async function uploadAndRestore(){
   var file=document.getElementById('manual-mapping').files[0];
@@ -995,11 +995,10 @@ async function uploadAndRestore(){
     var fd=new FormData(); fd.append('mapping',file);
     var restoreHeaders={};
     if(RESTORE_FROM_REVIEW)restoreHeaders['X-Restore-Uploaded-Source']='1';
-    var r=await fetch('/api/restore/'+SID,{method:'POST',body:fd,headers:restoreHeaders});
-    var j=await r.json();
+    var j=await requestExportResult('/api/restore/'+SID,{method:'POST',body:fd,headers:restoreHeaders},'还原文书');
     if(j.ok){ out.innerHTML=okBox(j.output_url,j.output_name,j.applied); }
-    else{ out.innerHTML='<div class="alert err"><span class="i">✗</span><span>还原失败：'+(j.error||'未知错误')+'</span></div>'; }
-  }catch(e){ out.innerHTML='<div class="alert err"><span class="i">✗</span><span>请求失败：'+String(e)+'</span></div>'; }
+    else{ showExportProblem(out,j); }
+  }catch(e){ showExportProblem(out,{stage:'还原文书',error:'未能显示还原结果。',advice:'请先查看历史项目是否已有还原稿，再重试。'}); }
 }
 </script>
 """
@@ -1051,6 +1050,7 @@ def build_restore_landing_page(sid: str, info: Dict[str, Any]) -> bytes:
             .replace("__RESTORE_STATUS__", restore_status)
             .replace("__RESTORE_ACTION__", restore_action)
             .replace("__MANUAL_HIDE__", manual_hide)
+            .replace("__EXPORT_FEEDBACK__", EXPORT_FEEDBACK_JS)
             .replace("__RESTORE_FROM_REVIEW__", "true" if info.get("_restore_from_review") else "false"))
     return html_doc("还原文书 · " + info.get("filename", ""), body,
                     mid='<span class="pill">' + name + '</span>')
@@ -1198,6 +1198,7 @@ __LOOKS_REDACTED_NOTICE__
 
 <script>
 var DATA = __DATA__;
+__EXPORT_FEEDBACK__
 var EXPORT_REVIEW_NOTICE = __EXPORT_REVIEW_NOTICE_JSON__;
 var EXPORT_UNRECOGNIZED_NOTE = __EXPORT_UNRECOGNIZED_NOTE_JSON__;
 var enabled = new Set(DATA.types.filter(function(t){return t.default_enabled!==false;}).map(function(t){return t.id;}));
@@ -1688,9 +1689,21 @@ function browserDownload(url){
 }
 
 async function writeToFolder(url, name){
-  var resp = await fetch(url);
-  if(!resp.ok) throw new Error('HTTP ' + resp.status);
-  var blob = await resp.blob();
+  var blob;
+  try{
+    var resp = await fetch(url);
+    if(!resp.ok){
+      var details=await resp.json();
+      var err=new Error(details.error);
+      err.exportDetails=details;
+      throw err;
+    }
+    blob=await resp.blob();
+  }catch(e){
+    e.exportDetails=e.exportDetails||{stage:'读取已生成的文件',error:'浏览器未能从本机服务取得文件。',
+      advice:'确认文书脱敏工作台仍在运行，然后从导出结果或历史项目重新下载。'};
+    throw e;
+  }
   var fh = await dirHandle.getFileHandle(name, {create:true});
   var w = await fh.createWritable();
   await w.write(blob);
@@ -1722,6 +1735,7 @@ async function saveOutputs(j){
         var sz = await writeToFolder(jobs[i].url, jobs[i].name);
         saved.push({name:jobs[i].name, size:sz, how:'folder'});
       }catch(e){
+        if(e.exportDetails)throw e;
         failed.push(jobs[i]);
       }
     }
@@ -1751,7 +1765,7 @@ function renderSaved(sv, j){
   var head;
   if(sv.folder){
     head = '已自动保存到文件夹 <code style="background:var(--surface-2);border:1px solid var(--line-soft);border-radius:6px;padding:1px 6px">' + esc(sv.folder) + '</code>';
-    if(sv.degraded) head += '（部分文件写入失败，已改为下载）';
+    if(sv.degraded) head += '（部分文件未能写入所选目录，已尝试浏览器下载。请查看下载记录，或重新选择有写入权限的目录。）';
   }else{
     head = '已触发浏览器下载；浏览器可能询问保存位置，否则按您在浏览器中设置的下载位置保存。';
   }
@@ -1865,9 +1879,10 @@ async function renderManifest(man, items, snapshot){
   if(!snapshot){
     try{
       var localPayload=canonicalApplyPayload(makeApplySelection(items,false));
-      var response=await fetch('/api/export-plan/__SID__',{method:'POST',headers:{'Content-Type':'application/json'},body:localPayload});
-      snapshot=await response.json();if(!snapshot.ok)throw Error(snapshot.error||'无法建立导出快照');snapshot.localPayload=localPayload;
-    }catch(e){document.getElementById('result').textContent=String(e.message||e);return;}
+      snapshot=await requestExportResult('/api/export-plan/__SID__',{method:'POST',headers:{'Content-Type':'application/json'},body:localPayload},'导出前检查');
+      if(!snapshot.ok){showExportProblem(document.getElementById('result'),snapshot);return;}
+      snapshot.localPayload=localPayload;
+    }catch(e){showExportProblem(document.getElementById('result'),{stage:'导出前检查',error:'无法准备导出清单。',advice:'请刷新复核页并重新核对选择。'});return;}
   }
   var out=document.getElementById('result');
   var red=man.red||[];
@@ -1933,11 +1948,11 @@ async function runApply(items, confirmed, snapshot, softNotes){
       }
       sel.selection_digest=snapshot.selection_digest;
     }else{
-      var planResponse=await fetch('/api/export-plan/__SID__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sel)});
-      var plan=await planResponse.json();if(!plan.ok)throw Error(plan.error||'导出快照校验失败');sel.selection_digest=plan.selection_digest;
+      var plan=await requestExportResult('/api/export-plan/__SID__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sel)},'导出前检查');
+      if(!plan.ok){showExportProblem(out,plan);btn.disabled=false;return;}
+      sel.selection_digest=plan.selection_digest;
     }
-    var r=await fetch('/api/apply/__SID__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sel)});
-    var j=await r.json();
+    var j=await requestExportResult('/api/apply/__SID__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sel)},'生成脱敏文书');
     if(j.code==='EXPORT_SELECTION_STALE'){
       var updatedItems=collectItems();
       var updatedManifest=buildManifest(updatedItems);
@@ -1966,11 +1981,11 @@ async function runApply(items, confirmed, snapshot, softNotes){
         renderSkippedDetails(j.skipped_details)+
         '</span></div>';
     }else{
-      var errorText=String(j.error||'未知错误').replace(/^(脱敏失败：)+/, '');
-      out.innerHTML='<div class="alert err"><span class="i">✗</span><span>脱敏失败：'+esc(errorText)+'</span></div>';
+      showExportProblem(out,j);
     }
   }catch(e){
-    out.innerHTML='<div class="alert err"><span class="i">✗</span><span>请求失败：'+esc(String(e))+'</span></div>';
+    showExportProblem(out,e.exportDetails||{stage:'显示或保存导出结果',error:'当前页面未能完成保存。',
+      advice:'请先在本机项目查看已有导出稿，或重新选择可写目录。'});
   }
   btn.disabled=false;
 }
@@ -2114,6 +2129,7 @@ def build_review_page(sid: str, info: Dict[str, Any]) -> bytes:
             .replace("__OCC__", str(occ_n))
             .replace("__REVIEW_HELP__", help_html)
             .replace("__LOOKS_REDACTED_NOTICE__", looks_redacted_html)
+            .replace("__EXPORT_FEEDBACK__", EXPORT_FEEDBACK_JS)
             .replace("__EXPORT_REVIEW_NOTICE__", esc(EXPORT_REVIEW_NOTICE))
             .replace("__EXPORT_UNRECOGNIZED_NOTE__", esc(EXPORT_UNRECOGNIZED_NOTE))
             .replace("__EXPORT_REVIEW_NOTICE_JSON__", json.dumps(EXPORT_REVIEW_NOTICE, ensure_ascii=False))

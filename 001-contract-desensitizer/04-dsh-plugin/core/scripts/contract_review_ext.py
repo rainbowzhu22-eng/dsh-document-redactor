@@ -11,6 +11,7 @@ import zipfile
 from lxml import etree as ET
 
 import contract_sensitive_detector as D
+from contract_export_errors import ExportFailure
 
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _W14_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
@@ -581,6 +582,14 @@ def _inside_nodes(element, roots):
     return False
 
 
+def _image_export_failure(part, reason, ordinal=None):
+    position = f"{part}第{ordinal}个图片" if ordinal else part
+    return ExportFailure(
+        "DOCX_IMAGE_REFERENCE_INVALID", f"{position}：{reason}",
+        "在 Word 副本的对应正文或页眉页脚中，核对图片能否正常显示并重新插入为内嵌图片，再上传副本。若无法定位，请保留原件并反馈此部件和序号。",
+        stage="检查 Word 图片", location={"part": part, "kind": "图片", "ordinal": ordinal})
+
+
 def _story_image_parts(source, names, stories, unsupported_manifest=()):
     image_parts = set()
     relationship_parts = set()
@@ -601,13 +610,13 @@ def _story_image_parts(source, names, stories, unsupported_manifest=()):
                     continue
                 rid = rel.get("Id", "")
                 if not rid:
-                    raise ValueError("DOCX图片关系无效")
+                    raise _image_export_failure(part, "图片关系缺少编号")
                 if rel.get("TargetMode", "").lower() == "external":
                     external_ids.add(rid)
                     continue
                 target = _resolve_part(part, rel.get("Target", ""))
                 if target not in names or not target.startswith("word/media/"):
-                    raise ValueError("DOCX图片目标缺失或不在媒体目录")
+                    raise _image_export_failure(part, "图片目标缺失或不在媒体目录")
                 relations[rid] = target
 
         used_ids = set()
@@ -619,8 +628,7 @@ def _story_image_parts(source, names, stories, unsupported_manifest=()):
                 continue
             if node.tag in {_A + "blip", _V + "imagedata"}:
                 image_ordinal += 1
-            image_error = "无法导出：%s第%d个图片的内嵌引用缺失或无效，请保留原件并反馈此提示。" % (
-                part, image_ordinal)
+            image_error = "内嵌引用缺失或无效"
             if node.tag == _A + "blip":
                 if node.get(_R + "link"):
                     continue
@@ -628,17 +636,17 @@ def _story_image_parts(source, names, stories, unsupported_manifest=()):
                 if rid in external_ids:
                     continue
                 if not rid or rid not in relations:
-                    raise ValueError(image_error)
+                    raise _image_export_failure(part, image_error, image_ordinal)
                 used_ids.add(rid)
             elif node.tag == _V + "imagedata":
                 ids = {node.get(key) for key in (_R + "id", _O + "relid") if node.get(key)}
                 if len(ids) > 1:
-                    raise ValueError("无法导出：%s第%d个图片含互相冲突的图片引用。" % (part, image_ordinal))
+                    raise _image_export_failure(part, "含互相冲突的图片引用", image_ordinal)
                 rid = next(iter(ids), "")
                 if rid in external_ids:
                     continue
                 if not rid or rid not in relations:
-                    raise ValueError(image_error)
+                    raise _image_export_failure(part, image_error, image_ordinal)
                 used_ids.add(rid)
 
         for drawable in list(root.iter(_W + "drawing")) + list(root.iter(_W + "pict")):
@@ -812,9 +820,15 @@ def _content_control_error(part, root, ignored_controls=()):
         if control in reasons:
             location = ("正文" if part == "word/document.xml" else
                         "页眉" if re.fullmatch(r"word/header\d+\.xml", part) else "页脚")
-            return "无法导出：%s（%s）第%d个内容控件%s。请保留原件并反馈此提示，无需反复另存。" % (
-                location, part, index, reasons[control])
-    return "内容控件结构未通过校验"
+            return ExportFailure(
+                "DOCX_CONTENT_CONTROL_UNSUPPORTED",
+                f"{location}（{part}）第{index}个内容控件{reasons[control]}。",
+                "在 Word 副本的对应部件中找到该控件，先核对显示内容，再将其转换为普通文本后重新上传。找不到控件时，请保留原件并反馈部件和序号。",
+                stage="检查 Word 内容控件",
+                location={"part": part, "section": location, "kind": "内容控件", "ordinal": index})
+    return ExportFailure("DOCX_CONTENT_CONTROL_UNSUPPORTED", "内容控件结构未通过校验。",
+                         "保留原件并反馈此提示；该结构需要核查后才能处理。",
+                         stage="检查 Word 内容控件", location={"part": part})
 
 
 def _normalize_static_content_controls(controls):
@@ -1282,7 +1296,7 @@ def clean_docx(path, originals, comment_mode, preserve_revisions=False,
             safe_controls = _simple_content_controls(
                 root, ignored_controls=safe_footer_controls)
             if controls and len(safe_controls) + len(safe_footer_controls) != len(controls):
-                raise ValueError(_content_control_error(part, root, safe_footer_controls))
+                raise _content_control_error(part, root, safe_footer_controls)
             if controls:
                 content_control_digests[part] = _content_control_structure_digest(
                     root, additional_controls=safe_footer_controls)
@@ -1381,7 +1395,7 @@ def clean_docx(path, originals, comment_mode, preserve_revisions=False,
                     if (content_controls and
                             len(safe_content_controls) + len(safe_footer_controls) !=
                             len(content_controls)):
-                        raise ValueError(_content_control_error(name, root, safe_footer_controls))
+                        raise _content_control_error(name, root, safe_footer_controls)
                     story_images = {node for drawable in
                                     list(root.iter(_W + "drawing")) + list(root.iter(_W + "pict"))
                                     for node in (drawable,)}
