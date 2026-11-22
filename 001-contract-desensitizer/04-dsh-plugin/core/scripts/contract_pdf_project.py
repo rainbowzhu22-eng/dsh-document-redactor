@@ -17,6 +17,7 @@ from pathlib import Path
 import contract_sensitive_detector as D
 import contract_review_ext as R
 import contract_redaction_policy as Policy
+from contract_export_errors import ExportFailure, file_failure
 
 SCALE = 2.0
 PDF_BLOCK_VERSION = 9
@@ -2191,13 +2192,18 @@ def _export_report_project(p):
     soft.append("本次处置：替换 %d 处、按框处理 %d 处、人工遮盖 %d 处；机器自动处理 %d 处；另有 %d 处候选保留原文。"
                 % (replaced, boxed, covered, auto_processed, preserved))
     soft.append("导出为像素稿，不含文本层与映射文件，不能用工具还原")
-    return {"hard": hard, "red": red, "soft": soft}
+    return {"hard": hard, "hard_issues": evaluation.get("hard_issues", []), "red": red, "soft": soft}
 
 
-class PdfDispositionRequired(ValueError):
-    """Raised when a PDF project still has candidates requiring a decision."""
+class PdfDispositionRequired(ExportFailure):
+    """A review decision is required before the PDF can be generated."""
 
-    code = "PDF_DISPOSITION_REQUIRED"
+    def __init__(self, issue):
+        image_failed = issue["code"] == "PDF_IMAGE_DETECTION_FAILED"
+        message = ("有页面的图像检测未完成或部分失败。" if image_failed
+                   else f"有 {issue['count']} 处敏感内容尚未处理。")
+        super().__init__("PDF_DISPOSITION_REQUIRED", message, issue["action"],
+                         stage="检查 PDF 复核状态", location={"pages": issue.get("pages", [])})
 
 
 def export(root, sid, revision=None, confirmed=False):
@@ -2206,10 +2212,11 @@ def export(root, sid, revision=None, confirmed=False):
         _rules_snapshot(root, sid, p)
         # 扫描运行中和存在未处置项时均不导出；失败/取消仍按当前快照走红档确认。
         if p["stage"] == "processing":
-            raise ValueError("扫描仍在进行，请等待完成后再导出")
+            raise ExportFailure("PDF_STAGE_PROCESSING", "PDF 仍在扫描。",
+                                "等待页数进度完成，逐页复核后再导出。", stage="检查 PDF 复核状态")
         _report = _export_report_project(p)
         if _report["hard"]:
-            raise PdfDispositionRequired(_report["hard"][0])
+            raise PdfDispositionRequired(_report["hard_issues"][0])
         if _report["red"] and not confirmed:
             # 红档一次确认（拍板项1）：识别失败页 / 未定位命中 / 扫描停止 / 零处置。
             return {"needs_confirm": True, "red": _report["red"], "notes": _report["soft"]}
@@ -2217,35 +2224,84 @@ def export(root, sid, revision=None, confirmed=False):
         render_candidates = [x for x in p["candidates"]
                              if _effective_candidate_state(p, x)["selected"] and
                              _candidate_render_plan(x, pages_by_no.get(x.get("page")))["mode"] != "none"]
-        source = original(root, sid, p)
+        try:
+            source = original(root, sid, p)
+        except (FileNotFoundError, ValueError) as exc:
+            raise ExportFailure("PDF_ORIGINAL_UNAVAILABLE", "当前项目无法验证原始 PDF。",
+                                "点击「重新关联原件」，选择本项目最初上传的 PDF；无法找到时请重新上传可用原件。",
+                                stage="读取原始 PDF") from exc
+        except OSError as exc:
+            raise file_failure(exc, stage="读取原始 PDF") from exc
+
         import pypdfium2 as pdfium
-        pdf = pdfium.PdfDocument(str(source))
-        pdf.init_forms()
-        from PIL import Image
+        try:
+            pdf = pdfium.PdfDocument(str(source))
+        except Exception as exc:
+            raise ExportFailure("PDF_RENDER_OPEN_FAILED", "原始 PDF 无法进入页面渲染。",
+                                "先用 PDF 阅读器确认原件能正常打开；若文书加密或损坏，请取得可读取的副本后重新上传。",
+                                stage="重建 PDF 页面") from exc
         images = []
-        for i in range(len(pdf)):
-            page = pdf[i]
-            img = page.render(scale=SCALE).to_pil().convert("RGB")
-            page.close()
-            images.append(_redact_image(img,
-                [x for x in render_candidates if x["page"] == i + 1],
-                [x for x in p["regions"] if x["page"] == i + 1]))
-        pdf.close()
+        try:
+            pdf.init_forms()
+            for i in range(len(pdf)):
+                try:
+                    page = pdf[i]
+                    try:
+                        img = page.render(scale=SCALE).to_pil().convert("RGB")
+                    finally:
+                        page.close()
+                    images.append(_redact_image(img,
+                        [x for x in render_candidates if x["page"] == i + 1],
+                        [x for x in p["regions"] if x["page"] == i + 1]))
+                except Exception as exc:
+                    font_missing = "没有可用的中文字体" in str(exc)
+                    reason = "本机缺少可用于绘制代号的中文字体。" if font_missing else "该页无法按当前复核结果重建。"
+                    advice = ("检查本机是否可用中文字体，或改用手工遮盖后重新导出。" if font_missing else
+                              "定位该页核对原页与遮盖，再重试本页识别；仍失败时请保留原件及页码反馈。")
+                    raise ExportFailure("PDF_RENDER_PAGE_FAILED", reason, advice,
+                                        stage="重建 PDF 页面", location={"pages": [i + 1]}) from exc
+        finally:
+            pdf.close()
+        if not images:
+            raise ExportFailure("PDF_EMPTY_OUTPUT", "没有可生成的页面。",
+                                "在 PDF 阅读器核对原件页数，再重新上传。", stage="重建 PDF 页面")
+
         outdir = paths(root, sid)[0] / "out"
-        outdir.mkdir(exist_ok=True)
         name = "脱敏文书-001.pdf"
         temp = outdir / "output.tmp.pdf"
-        images[0].save(temp, "PDF", save_all=True, append_images=images[1:],
-                       resolution=72 * SCALE, title="脱敏文书", author="")
-        # PDF pages are newly encoded images; no source object, metadata or hidden text survives.
-        if _count_link_annotations(temp):
-            temp.unlink(missing_ok=True)
-            raise ValueError("PDF重建后仍检测到可点击链接")
-        os.replace(temp, outdir / name)
+        try:
+            try:
+                outdir.mkdir(exist_ok=True)
+                images[0].save(temp, "PDF", save_all=True, append_images=images[1:],
+                               resolution=72 * SCALE, title="脱敏文书", author="")
+            except OSError as exc:
+                raise file_failure(exc, saving=True, stage="保存重建 PDF") from exc
+            try:
+                links = _count_link_annotations(temp)
+            except Exception as exc:
+                raise ExportFailure("PDF_LINK_CHECK_FAILED", "生成稿的可点击链接无法校验。",
+                                    "重新导出；仍失败时，保留原件并反馈本提示。", stage="校验生成稿") from exc
+            if links:
+                raise ExportFailure("PDF_LINKS_REMAIN", "PDF 重建后仍检测到可点击链接。",
+                                    "保留原件，反馈当前提示以核查页面重建。", stage="校验生成稿")
+            try:
+                os.replace(temp, outdir / name)
+            except OSError as exc:
+                raise file_failure(exc, saving=True, stage="保存重建 PDF") from exc
+        finally:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
         p["output"] = name
         exported_revision = p["revision"]
         p["last_export"] = {"revision": exported_revision, "pages": len(p["pages"])}
         if p["stage"] in ("review", "exported"):
             p["stage"] = "exported"
-        save(root, sid, p)
+        try:
+            save(root, sid, p)
+        except OSError as exc:
+            raise ExportFailure("PDF_EXPORT_HISTORY_WRITE_FAILED", "PDF 已生成，项目状态未能保存。",
+                                "从历史项目尝试下载生成稿。确认项目目录可写后再重试。",
+                                stage="保存 PDF 项目记录") from exc
         return {"name": name, "exported_revision": exported_revision, "notes": _report["soft"]}

@@ -31,7 +31,7 @@
   };
   document.body.classList.add('dsh-workbench');
   // Navigation messages carry no document text, filename, candidates or mapping.
-  window.parent.postMessage({ type: 'dsh-redactor:page', page: location.pathname === '/' ? 'upload' : /^\/pdf\/|^\/review/.test(location.pathname) ? 'review' : 'other' }, '*');
+  window.parent.postMessage({ type: 'dsh-redactor:page', page: location.pathname === '/' ? 'upload' : /^\/(?:pdf\/|xlsx\/|review)/.test(location.pathname) ? 'review' : 'other' }, '*');
   window.addEventListener('message', event => {
     if (event.source !== window.parent || event.data?.type !== 'dsh-redactor:rules-applied') return;
     const old = document.getElementById('dsh-rules-applied'); if (old) old.remove();
@@ -118,7 +118,7 @@
       side.append(communityCard(),ruleRow);
     } else stack.append(ruleRow);
     stack.append(more);
-  } else if (/^\/pdf\/|^\/review/.test(location.pathname)) {
+  } else if (/^\/(?:pdf\/|xlsx\/|review)/.test(location.pathname)) {
     document.body.classList.add('dsh-review');
     const bar = el('div', '', 'dsh-review-help');
     const copy = el('span', '本份文书漏项，可直接补字段或框选遮盖。希望以后也能自动识别？');
