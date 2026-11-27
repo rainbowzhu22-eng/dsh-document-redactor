@@ -1,3 +1,11 @@
+# 文书脱敏工作台 · WorkBuddy 固定提交接入候选
+
+本分支为WorkBuddy5.11.3+、macOS测试版接入候选，新增stdio启动入口，直接共用仓库已有dsh-document-redactor v1.5.0-dev.4引擎和正式导出。连接器通过固定Git提交获取代码，无需npm注册或登录。尚待开放平台连接自测和审核，未上架。
+
+Node.js22+可由连接器声明托管；本机文书服务仍需Python3.9+（建议3.12），首次启动需联网准备依赖。原文与还原映射保留本机；主动让AI改规则时会传规则文本和手填需求。外发前人工复核。全新机器运行时和市场安装仍待验，Windows/Linux不支持。
+
+入口：`workbuddy-document-redactor`，实现位于`workbuddy-mcp/marketplace-mcp.mjs`。既有DSH说明如下。
+
 # 文书脱敏工作台
 
 **在 DSH 里，三步完成文书脱敏。**

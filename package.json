@@ -12,7 +12,9 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "001-contract-desensitizer/04-dsh-plugin"
+    "001-contract-desensitizer/04-dsh-plugin",
+    "workbuddy-mcp",
+    "WORKBUDDY-THIRD-PARTY-NOTICES.txt"
   ],
   "engines": {
     "node": ">=22"
@@ -41,5 +43,8 @@
     "type": "git",
     "url": "https://github.com/rainbowzhu22-eng/dsh-document-redactor.git"
   },
-  "homepage": "https://xingchendata.com/dsh-document-redactor.html"
+  "homepage": "https://xingchendata.com/dsh-document-redactor.html",
+  "bin": {
+    "workbuddy-document-redactor": "workbuddy-mcp/marketplace-mcp.mjs"
+  }
 }
